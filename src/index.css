@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --doto-primary: #6012c3;
+    --doto-primary-dark: #4b0d9c;
+    --doto-primary-light: #7c2de0;
+    --doto-primary-muted: #f4eeff;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}

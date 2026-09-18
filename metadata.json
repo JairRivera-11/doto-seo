@@ -1,0 +1,6 @@
+{
+  "name": "Doto SEO",
+  "description": "Shopify SEO Bulk Editor & Alt Text AI - Administrador masivo e individual de Handle, SEO Title, Meta Description y textos alternativos con IA para imágenes de Shopify.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

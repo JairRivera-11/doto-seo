@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs -r kill)",
+      "Bash(nohup npx tsx server.ts)",
+      "Bash(disown)",
+      "Read(//private/tmp/**)"
+    ]
+  }
+}
