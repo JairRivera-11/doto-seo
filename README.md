@@ -164,17 +164,17 @@ El reporte está 100% libre de credenciales o tokens.
 1. Ve a **Auditoría** en la barra lateral.
 2. En la pestaña **Auditoría**, haz clic en **Escanear catálogo**. La app recorre todo el catálogo (con paginación) y detecta:
    - Productos con **Marca** (vendor) vacía o configurada como `BASE`.
-   - Productos con **Precio** en `$0`, `$999,999` o `$9,999,999` (valores de referencia/placeholder).
+   - **Variantes/SKU** con **Precio** en `$0`, `$999,999` o `$9,999,999` (valores de referencia/placeholder) — el precio se evalúa por variante, no por producto, así que un producto con varias variantes y solo una mal precificada sí se detecta.
    - Productos **sin Descripción**.
-3. Usa los filtros (Marca, Precio, Sin descripción, Sin problemas) y el buscador para revisar los resultados, o descarga un **reporte CSV** de lo encontrado.
+3. Usa los filtros (Marca, Precio, Sin descripción, Sin problemas) y el buscador para revisar los resultados, o descarga un **reporte CSV** de lo encontrado (incluye el/los SKU con precio erróneo).
 4. Este escaneo es **de solo lectura**. Para corregir lo detectado tienes dos opciones:
    - Editar el producto directamente en el **Admin de Shopify** (botón "Ver en Shopify" en cada fila).
    - Corregirlo en lote desde la pestaña **Actualización masiva** (siguiente paso).
-5. En **Actualización masiva**, descarga la **plantilla de ejemplo** (CSV o Excel) con las columnas `Product ID`, `Marca`, `Precio` y `Descripción`.
-6. Llena solo las columnas que necesites corregir por producto — **una celda vacía significa "no tocar ese campo"**, igual que en la actualización masiva de SEO. Por ejemplo, para arreglar solo el precio de un producto, deja Marca y Descripción vacías en esa fila.
-7. Sube tu archivo `.csv`, `.xlsx` o `.xls`. La app valida cada fila contra los valores actuales en Shopify y muestra una **vista previa con semáforo** (mismas categorías que en SEO: ✅ Válido, ⚠️ Advertencia, ❌ Error, ⚪ Sin cambios), incluyendo avisos cuando el nuevo valor propuesto no resuelve el problema detectado (p. ej. sigues dejando el precio en $0).
+5. En **Actualización masiva**, descarga la **plantilla de ejemplo** (CSV o Excel) con las columnas `Product ID`, `Marca`, `SKU`, `Precio` y `Descripción`.
+6. Llena solo las columnas que necesites corregir por producto — **una celda vacía significa "no tocar ese campo"**, igual que en la actualización masiva de SEO. Por ejemplo, para arreglar solo el precio de un producto, deja Marca y Descripción vacías en esa fila. La columna **SKU** identifica exactamente qué variante corregir: es obligatoria si el producto tiene más de una variante y vas a corregir Precio; si tiene una sola variante, puedes dejarla en blanco.
+7. Sube tu archivo `.csv`, `.xlsx` o `.xls`. La app valida cada fila contra los valores actuales en Shopify y muestra una **vista previa con semáforo** (mismas categorías que en SEO: ✅ Válido, ⚠️ Advertencia, ❌ Error, ⚪ Sin cambios), incluyendo avisos cuando el nuevo valor propuesto no resuelve el problema detectado (p. ej. sigues dejando el precio en $0) o cuando el SKU indicado no existe en ese producto.
 8. Revisa la vista previa y haz clic en **Actualizar productos** y confirma en la ventana modal.
-9. **A diferencia del módulo de SEO, esta acción sí modifica Marca, Precio y/o Descripción reales en Shopify** — revisa siempre la vista previa antes de confirmar. Si un producto tiene varias variantes con precios distintos, el nuevo precio se aplica por igual a todas sus variantes.
+9. **A diferencia del módulo de SEO, esta acción sí modifica Marca, Precio y/o Descripción reales en Shopify** — revisa siempre la vista previa antes de confirmar. El **Precio corrige únicamente la variante/SKU indicada**, nunca las demás variantes del mismo producto.
 
 ---
 

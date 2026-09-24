@@ -222,11 +222,13 @@ export async function parseUploadFile(file: File): Promise<{
 function detectCatalogAuditColumns(headers: string[]): {
   productIdCol?: string;
   vendorCol?: string;
+  skuCol?: string;
   priceCol?: string;
   descriptionCol?: string;
 } {
   let productIdCol: string | undefined;
   let vendorCol: string | undefined;
+  let skuCol: string | undefined;
   let priceCol: string | undefined;
   let descriptionCol: string | undefined;
 
@@ -256,6 +258,12 @@ function detectCatalogAuditColumns(headers: string[]): {
       }
     }
 
+    if (!skuCol) {
+      if (norm === 'sku' || norm === 'skuvariante' || norm === 'variantsku' || norm === 'codigo' || norm === 'codigosku') {
+        skuCol = h;
+      }
+    }
+
     if (!priceCol) {
       if (norm === 'precio' || norm === 'price' || norm === 'preciolista' || norm === 'preciopvp' || norm === 'preciodeventa') {
         priceCol = h;
@@ -277,7 +285,15 @@ function detectCatalogAuditColumns(headers: string[]): {
   if (!productIdCol) {
     productIdCol = headers.find((h) => {
       const n = normalizeHeader(h);
-      return n.includes('id') && !n.includes('marca') && !n.includes('vendor') && !n.includes('precio') && !n.includes('price') && !n.includes('desc');
+      return (
+        n.includes('id') &&
+        !n.includes('marca') &&
+        !n.includes('vendor') &&
+        !n.includes('sku') &&
+        !n.includes('precio') &&
+        !n.includes('price') &&
+        !n.includes('desc')
+      );
     });
   }
   if (!vendorCol) {
@@ -285,6 +301,9 @@ function detectCatalogAuditColumns(headers: string[]): {
       const n = normalizeHeader(h);
       return n.includes('marca') || n.includes('vendor') || n.includes('brand');
     });
+  }
+  if (!skuCol) {
+    skuCol = headers.find((h) => normalizeHeader(h).includes('sku'));
   }
   if (!priceCol) {
     priceCol = headers.find((h) => {
@@ -299,13 +318,14 @@ function detectCatalogAuditColumns(headers: string[]): {
     });
   }
 
-  return { productIdCol, vendorCol, priceCol, descriptionCol };
+  return { productIdCol, vendorCol, skuCol, priceCol, descriptionCol };
 }
 
 export interface CatalogAuditParsedRow {
   rowNumber: number;
   productId: string;
   vendor?: string;
+  sku?: string;
   price?: string;
   description?: string;
 }
@@ -313,13 +333,15 @@ export interface CatalogAuditParsedRow {
 /**
  * Reads and parses an uploaded file (.csv, .xlsx, .xls) for the catalog
  * Audit's bulk-update flow. Mirrors `parseUploadFile` above but detects
- * Marca/Precio/Descripción columns instead of the SEO ones.
+ * Marca/SKU/Precio/Descripción columns instead of the SEO ones. SKU
+ * identifies exactly which variant a price change applies to.
  */
 export async function parseCatalogAuditUploadFile(file: File): Promise<{
   rows: CatalogAuditParsedRow[];
   columnMapping: {
     productIdCol?: string;
     vendorCol?: string;
+    skuCol?: string;
     priceCol?: string;
     descriptionCol?: string;
   };
@@ -358,6 +380,7 @@ export async function parseCatalogAuditUploadFile(file: File): Promise<{
     if (
       !rawId &&
       !row[columnMapping.vendorCol || ''] &&
+      !row[columnMapping.skuCol || ''] &&
       !row[columnMapping.priceCol || ''] &&
       !row[columnMapping.descriptionCol || '']
     ) {
@@ -372,6 +395,11 @@ export async function parseCatalogAuditUploadFile(file: File): Promise<{
     if (columnMapping.vendorCol && row[columnMapping.vendorCol] !== undefined) {
       const val = String(row[columnMapping.vendorCol]).trim();
       if (val !== '') rowItem.vendor = val;
+    }
+
+    if (columnMapping.skuCol && row[columnMapping.skuCol] !== undefined) {
+      const val = String(row[columnMapping.skuCol]).trim();
+      if (val !== '') rowItem.sku = val;
     }
 
     if (columnMapping.priceCol && row[columnMapping.priceCol] !== undefined) {
@@ -397,12 +425,13 @@ export async function parseCatalogAuditUploadFile(file: File): Promise<{
  * as the SEO bulk-update template).
  */
 export function downloadCatalogAuditCSVTemplate(): void {
-  const headers = ['Product ID', 'Marca', 'Precio', 'Descripción'];
+  const headers = ['Product ID', 'Marca', 'SKU', 'Precio', 'Descripción'];
   const sampleRows = [
-    ['1112223334445', 'Doto Accesorios', '349.00', ''],
-    ['2223334445556', 'Doto Accesorios', '', 'Funda protectora de silicón transparente resistente a caídas, compatible con carga inalámbrica.'],
-    ['3334445556667', '', '', 'Mica de cristal templado 9H con instalación fácil sin burbujas y dureza anti-rayaduras.'],
-    ['4445556667778', 'Doto Accesorios', '199.00', ''],
+    ['1112223334445', 'Doto Accesorios', '', '', ''],
+    ['2223334445556', 'Doto Accesorios', '', '', ''],
+    ['3334445556667', '', '', '', 'Mica de cristal templado 9H con instalación fácil sin burbujas y dureza anti-rayaduras.'],
+    ['4445556667778', '', '', '199.00', ''],
+    ['5556667778889', '', 'HDMI21-8K-5M', '429.00', ''],
   ];
 
   const csvContent = [
@@ -437,17 +466,18 @@ export function downloadCatalogAuditCSVTemplate(): void {
 export function downloadCatalogAuditExcelTemplate(): void {
   const wb = XLSX.utils.book_new();
 
-  const headers = ['Product ID', 'Marca', 'Precio', 'Descripción'];
+  const headers = ['Product ID', 'Marca', 'SKU', 'Precio', 'Descripción'];
   const sampleData = [
     headers,
-    ['1112223334445', 'Doto Accesorios', '349.00', ''],
-    ['2223334445556', 'Doto Accesorios', '', 'Funda protectora de silicón transparente resistente a caídas, compatible con carga inalámbrica.'],
-    ['3334445556667', '', '', 'Mica de cristal templado 9H con instalación fácil sin burbujas y dureza anti-rayaduras.'],
-    ['4445556667778', 'Doto Accesorios', '199.00', ''],
+    ['1112223334445', 'Doto Accesorios', '', '', ''],
+    ['2223334445556', 'Doto Accesorios', '', '', ''],
+    ['3334445556667', '', '', '', 'Mica de cristal templado 9H con instalación fácil sin burbujas y dureza anti-rayaduras.'],
+    ['4445556667778', '', '', '199.00', ''],
+    ['5556667778889', '', 'HDMI21-8K-5M', '429.00', ''],
   ];
 
   const wsProductos = XLSX.utils.aoa_to_sheet(sampleData);
-  wsProductos['!cols'] = [{ wch: 18 }, { wch: 22 }, { wch: 14 }, { wch: 70 }];
+  wsProductos['!cols'] = [{ wch: 18 }, { wch: 22 }, { wch: 20 }, { wch: 14 }, { wch: 70 }];
   XLSX.utils.book_append_sheet(wb, wsProductos, 'Productos');
 
   const instruccionesData = [
@@ -456,14 +486,15 @@ export function downloadCatalogAuditExcelTemplate(): void {
     ['Campo', 'Requerido', 'Recomendación / Reglas', 'Comportamiento si se deja vacío'],
     ['Product ID', 'SÍ (Obligatorio)', 'Debe ser el ID numérico de Shopify del producto (ej: 1234567890123).', 'La fila será rechazada con error.'],
     ['Marca', 'Opcional', 'Nombre real de la marca/proveedor. Sustituye valores "BASE" o vacíos.', 'NO se modifica la marca actual en Shopify.'],
-    ['Precio', 'Opcional', 'Número sin símbolo de moneda (ej: 349.00). Se aplica a TODAS las variantes del producto.', 'NO se modifica el precio actual en Shopify.'],
+    ['SKU', 'Solo si el producto tiene varias variantes y vas a corregir Precio', 'SKU exacto de la variante a corregir. Si el producto tiene una sola variante, puedes dejarlo en blanco.', 'Si hay Precio y el producto tiene varias variantes, la fila se rechaza con error (no sabemos cuál corregir).'],
+    ['Precio', 'Opcional', 'Número sin símbolo de moneda (ej: 349.00). Corrige SOLO la variante indicada en SKU.', 'NO se modifica el precio actual en Shopify.'],
     ['Descripción', 'Opcional', 'Texto plano de la descripción del producto.', 'NO se modifica la descripción actual.'],
     [''],
     ['REGLAS CLAVE:'],
-    ['1. Solo se modifican Marca, Precio y/o Descripción — ningún otro dato del producto se altera (handle, SEO, imágenes, variantes, inventario).'],
+    ['1. Solo se modifican Marca, Precio y/o Descripción — ningún otro dato del producto se altera (handle, SEO, imágenes, inventario).'],
     ['2. Modo "Solo cambios": Si el nuevo valor es idéntico al actual en Shopify, no se genera actualización innecesaria.'],
     ['3. Si dejas una celda en blanco, el valor actual en Shopify se conserva sin tocar.'],
-    ['4. Si el producto tiene varias variantes con precios distintos, el nuevo precio se aplica por igual a todas ellas.'],
+    ['4. El Precio corrige SOLO la variante/SKU indicada — nunca las demás variantes del mismo producto.'],
     ['5. Antes de actualizar la tienda real, siempre verás una vista previa de validación con semáforo (verde/amarillo/rojo).'],
   ];
 
@@ -635,20 +666,30 @@ export function downloadCatalogAuditCSV(rows: CatalogAuditRow[]): void {
     'Marca (Vendor)',
     'Precio Mínimo',
     'Precio Máximo',
+    'SKU con Problema de Precio',
     'Descripción',
     'Problemas Detectados',
   ];
 
   const csvContent = [
     headers.join(','),
-    ...rows.map((row) =>
-      [
+    ...rows.map((row) => {
+      const prices = row.variants.map((v) => v.price);
+      const minPrice = prices.length > 0 ? Math.min(...prices) : 0;
+      const maxPrice = prices.length > 0 ? Math.max(...prices) : 0;
+      // Separate from price on purpose: a SKU only ever appears here when
+      // that specific variant has the bad price, so its mere presence in
+      // this column is the "this one needs fixing" signal.
+      const skuWithProblem = row.flaggedVariants.map((v) => v.sku || v.variantTitle || '(sin SKU)').join(' | ') || '—';
+
+      return [
         row.numericId,
         row.title,
         row.handle,
         row.vendor.trim() === '' ? '(Vacía)' : row.vendor,
-        row.minPrice,
-        row.maxPrice,
+        minPrice,
+        maxPrice,
+        skuWithProblem,
         row.description.trim() === '' ? '(Sin descripción)' : 'Con descripción',
         row.messages.join(' | ') || 'Sin problemas',
       ]
@@ -659,8 +700,8 @@ export function downloadCatalogAuditCSV(rows: CatalogAuditRow[]): void {
           }
           return str;
         })
-        .join(',')
-    ),
+        .join(',');
+    }),
   ].join('\r\n');
 
   const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });

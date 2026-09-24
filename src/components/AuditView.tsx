@@ -90,11 +90,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ shop, onNavigateLogs, onEx
     [filteredRows, currentPage]
   );
 
-  const formatPrice = (row: CatalogAuditRow) => {
-    const fmt = (n: number) => `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
-    if (row.minPrice === row.maxPrice) return fmt(row.minPrice);
-    return `${fmt(row.minPrice)} – ${fmt(row.maxPrice)}`;
-  };
+  const formatMoney = (n: number) => `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
 
   const adminProductUrl = (numericId: string) => `https://${shop.domain}/admin/products/${numericId}`;
 
@@ -325,13 +321,24 @@ export const AuditView: React.FC<AuditViewProps> = ({ shop, onNavigateLogs, onEx
                             )}
                           </td>
                           <td className="py-3 px-3.5">
-                            {row.issues.includes('price_zero') || row.issues.includes('price_placeholder') ? (
-                              <span className="inline-flex items-center space-x-1 text-rose-700 font-medium">
-                                <DollarSign className="w-3 h-3" />
-                                <span>{formatPrice(row)}</span>
-                              </span>
+                            {row.flaggedVariants.length > 0 ? (
+                              <div className="space-y-0.5">
+                                {row.flaggedVariants.map((v) => (
+                                  <div
+                                    key={v.variantId}
+                                    className="inline-flex items-center space-x-1 text-rose-700 font-medium"
+                                  >
+                                    <DollarSign className="w-3 h-3 shrink-0" />
+                                    <span>
+                                      {v.sku || v.variantTitle || 'SKU —'}: {formatMoney(v.price)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : row.variants.length === 1 ? (
+                              <span className="text-slate-700">{formatMoney(row.variants[0].price)}</span>
                             ) : (
-                              <span className="text-slate-700">{formatPrice(row)}</span>
+                              <span className="text-slate-700">{row.variants.length} variantes</span>
                             )}
                           </td>
                           <td className="py-3 px-3.5">

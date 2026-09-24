@@ -77,7 +77,8 @@ export interface AppSessionData {
   logs?: SessionLogEntry[];
   demoProductOverrides?: Record<string, Partial<ShopifyProductSEO>>;
   demoMediaOverrides?: Record<string, Partial<AltTextMediaRecordLike>>;
-  demoCatalogAuditOverrides?: Record<string, Partial<CatalogAuditProductLike>>;
+  demoCatalogAuditOverrides?: Record<string, Partial<Pick<CatalogAuditProductLike, 'vendor' | 'description'>>>;
+  demoCatalogAuditVariantPriceOverrides?: Record<string, number>;
   aiKeys?: {
     gemini?: string;
     claude?: string;
@@ -430,6 +431,14 @@ export function setDemoMediaOverride(
 // Audit module's "Actualización masiva" CSV/Excel upload)
 // ==========================================
 
+export interface CatalogAuditVariantLike {
+  id: string;
+  numericId: string;
+  sku: string;
+  title: string;
+  price: number;
+}
+
 export interface CatalogAuditProductLike {
   id: string;
   numericId: string;
@@ -437,8 +446,7 @@ export interface CatalogAuditProductLike {
   handle: string;
   vendor: string;
   description: string;
-  minPrice: number;
-  maxPrice: number;
+  variants: CatalogAuditVariantLike[];
 }
 
 export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
@@ -449,8 +457,7 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'samsung-galaxy-s25-ultra-512gb',
     vendor: 'Samsung',
     description: 'Smartphone Samsung Galaxy S25 Ultra con cámara de 200MP y procesador Snapdragon 8 Elite.',
-    minPrice: 32999,
-    maxPrice: 32999,
+    variants: [{ id: 'gid://shopify/ProductVariant/70101', numericId: '70101', sku: 'SGS25U-512-NEGRO', title: 'Default Title', price: 32999 }],
   },
   {
     id: 'gid://shopify/Product/9876543210987',
@@ -459,8 +466,7 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'apple-iphone-16-pro-max-256gb-titanio-natural',
     vendor: 'Apple',
     description: 'Apple iPhone 16 Pro Max con chip A18 Pro, botón de Control de Cámara y acabado en titanio natural.',
-    minPrice: 34999,
-    maxPrice: 34999,
+    variants: [{ id: 'gid://shopify/ProductVariant/70201', numericId: '70201', sku: 'IP16PM-256-TITNAT', title: 'Default Title', price: 34999 }],
   },
   {
     id: 'gid://shopify/Product/4567890123456',
@@ -469,8 +475,7 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'sony-wh-1000xm5-audifonos-inalambricos',
     vendor: 'Sony',
     description: 'Audífonos over-ear Sony WH-1000XM5 con cancelación de ruido activa inteligente y audio Hi-Res.',
-    minPrice: 8499,
-    maxPrice: 8499,
+    variants: [{ id: 'gid://shopify/ProductVariant/70301', numericId: '70301', sku: 'SONY-WH1000XM5-NEGRO', title: 'Default Title', price: 8499 }],
   },
   {
     id: 'gid://shopify/Product/7890123456789',
@@ -479,8 +484,7 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'xiaomi-14-ultra-512gb-blanco-leica',
     vendor: 'Xiaomi',
     description: 'Smartphone de alta gama Xiaomi 14 Ultra con sensor de una pulgada y óptica cuádruple Leica.',
-    minPrice: 27999,
-    maxPrice: 27999,
+    variants: [{ id: 'gid://shopify/ProductVariant/70401', numericId: '70401', sku: 'XM14U-512-BLANCO', title: 'Default Title', price: 27999 }],
   },
   {
     id: 'gid://shopify/Product/3344556677889',
@@ -489,8 +493,7 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'nintendo-switch-oled-blanco',
     vendor: 'Nintendo',
     description: 'Consola híbrida Nintendo Switch OLED con pantalla de 7 pulgadas y base con puerto LAN.',
-    minPrice: 7999,
-    maxPrice: 7999,
+    variants: [{ id: 'gid://shopify/ProductVariant/70501', numericId: '70501', sku: 'NSW-OLED-BLANCO', title: 'Default Title', price: 7999 }],
   },
   // Deliberate audit issues below, so the demo catalog is actually useful to try.
   {
@@ -500,8 +503,7 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'cargador-usb-c-20w-generico',
     vendor: 'BASE',
     description: 'Cargador rápido USB-C de 20W compatible con múltiples dispositivos.',
-    minPrice: 299,
-    maxPrice: 299,
+    variants: [{ id: 'gid://shopify/ProductVariant/70601', numericId: '70601', sku: 'CARGA-USBC-20W', title: 'Default Title', price: 299 }],
   },
   {
     id: 'gid://shopify/Product/2223334445556',
@@ -510,8 +512,10 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'funda-silicon-transparente-universal',
     vendor: '',
     description: 'Funda protectora de silicón transparente resistente a caídas.',
-    minPrice: 149,
-    maxPrice: 199,
+    variants: [
+      { id: 'gid://shopify/ProductVariant/70701', numericId: '70701', sku: 'FUNDA-SIL-CHICA', title: 'Chica', price: 149 },
+      { id: 'gid://shopify/ProductVariant/70702', numericId: '70702', sku: 'FUNDA-SIL-GRANDE', title: 'Grande', price: 199 },
+    ],
   },
   {
     id: 'gid://shopify/Product/3334445556667',
@@ -520,8 +524,7 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'mica-cristal-templado-9h',
     vendor: 'Doto Accesorios',
     description: '',
-    minPrice: 99,
-    maxPrice: 99,
+    variants: [{ id: 'gid://shopify/ProductVariant/70801', numericId: '70801', sku: 'MICA-9H-UNIV', title: 'Default Title', price: 99 }],
   },
   {
     id: 'gid://shopify/Product/4445556667778',
@@ -531,9 +534,11 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     vendor: 'Doto Accesorios',
     description:
       'Producto recién dado de alta por el equipo de compras, pendiente de fijar el precio final antes de publicarse.',
-    minPrice: 0,
-    maxPrice: 0,
+    variants: [{ id: 'gid://shopify/ProductVariant/70901', numericId: '70901', sku: 'NUEVO-SIN-PRECIO', title: 'Default Title', price: 0 }],
   },
+  // Multi-variant products below on purpose: only ONE of their SKUs carries
+  // the placeholder price, proving a fix must target that one variant and
+  // leave the correctly-priced sibling variant untouched.
   {
     id: 'gid://shopify/Product/5556667778889',
     numericId: '5556667778889',
@@ -541,9 +546,11 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'cable-hdmi-2-1-8k-precio-referencia',
     vendor: 'Doto Accesorios',
     description:
-      'Cable HDMI 2.1 de alta velocidad, cargado con precio de referencia mientras se confirma el costo real con el proveedor.',
-    minPrice: 999999,
-    maxPrice: 999999,
+      'Cable HDMI 2.1 de alta velocidad, disponible en 2m y 5m. La variante de 5m quedó cargada con precio de referencia mientras se confirma el costo real con el proveedor.',
+    variants: [
+      { id: 'gid://shopify/ProductVariant/71001', numericId: '71001', sku: 'HDMI21-8K-2M', title: '2 metros', price: 399 },
+      { id: 'gid://shopify/ProductVariant/71002', numericId: '71002', sku: 'HDMI21-8K-5M', title: '5 metros', price: 999999 },
+    ],
   },
   {
     id: 'gid://shopify/Product/6667778889990',
@@ -552,23 +559,38 @@ export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
     handle: 'bocina-bluetooth-portatil-precio-referencia',
     vendor: 'Doto Accesorios',
     description:
-      'Bocina Bluetooth portátil resistente al agua, cargada con precio de referencia mientras se confirma el costo real con el proveedor.',
-    minPrice: 9999999,
-    maxPrice: 9999999,
+      'Bocina Bluetooth portátil resistente al agua, disponible en negro y azul. La variante azul quedó cargada con precio de referencia mientras se confirma el costo real con el proveedor.',
+    variants: [
+      { id: 'gid://shopify/ProductVariant/71101', numericId: '71101', sku: 'BOCINA-BT-NEGRO', title: 'Negro', price: 899 },
+      { id: 'gid://shopify/ProductVariant/71102', numericId: '71102', sku: 'BOCINA-BT-AZUL', title: 'Azul', price: 9999999 },
+    ],
   },
 ];
 
 /** Merged view (seed + this session's edits) - use for reads/scans/preview. */
 export function getDemoCatalogAudit(session: IronSession<AppSessionData>): CatalogAuditProductLike[] {
-  const overrides = session.demoCatalogAuditOverrides || {};
-  return DEMO_CATALOG_AUDIT_SEED.map((p) => ({ ...p, ...(overrides[p.numericId] || {}) }));
+  const productOverrides = session.demoCatalogAuditOverrides || {};
+  const variantPriceOverrides = session.demoCatalogAuditVariantPriceOverrides || {};
+  return DEMO_CATALOG_AUDIT_SEED.map((p) => ({
+    ...p,
+    ...(productOverrides[p.numericId] || {}),
+    variants: p.variants.map((v) =>
+      variantPriceOverrides[v.id] !== undefined ? { ...v, price: variantPriceOverrides[v.id] } : v
+    ),
+  }));
+}
+
+/** Persist a price edit to one demo variant as a small override. */
+export function setDemoCatalogAuditVariantPrice(session: IronSession<AppSessionData>, variantId: string, price: number) {
+  if (!session.demoCatalogAuditVariantPriceOverrides) session.demoCatalogAuditVariantPriceOverrides = {};
+  session.demoCatalogAuditVariantPriceOverrides[variantId] = price;
 }
 
 /** Persist an edit to one demo catalog product as a small override (not a full-catalog copy). */
 export function setDemoCatalogAuditOverride(
   session: IronSession<AppSessionData>,
   id: string,
-  patch: Partial<CatalogAuditProductLike>
+  patch: Partial<Pick<CatalogAuditProductLike, 'vendor' | 'description'>>
 ) {
   if (!session.demoCatalogAuditOverrides) session.demoCatalogAuditOverrides = {};
   session.demoCatalogAuditOverrides[id] = { ...session.demoCatalogAuditOverrides[id], ...patch };

@@ -97,6 +97,27 @@ export function extractNumericId(idOrGid: string): string {
 }
 
 /**
+ * Format numeric ID into a Shopify ProductVariant Global ID (GID)
+ */
+export function formatVariantGid(id: string | number): string {
+  const strId = String(id).trim();
+  if (strId.startsWith('gid://shopify/ProductVariant/')) {
+    return strId;
+  }
+  const numericOnly = strId.replace(/\D/g, '');
+  return `gid://shopify/ProductVariant/${numericOnly}`;
+}
+
+/**
+ * Extract numeric ID from a Shopify ProductVariant GID or raw string
+ */
+export function extractVariantNumericId(idOrGid: string): string {
+  const match = idOrGid.match(/gid:\/\/shopify\/ProductVariant\/(\d+)/);
+  if (match) return match[1];
+  return idOrGid.replace(/\D/g, '');
+}
+
+/**
  * Validate handle slug format according to Shopify rules
  */
 export function validateHandleFormat(handle: string): { isValid: boolean; error?: string } {
@@ -471,6 +492,14 @@ export function evaluateProductSEO(product: ShopifyProductSEO): SEOAuditEvaluati
   return { status, messages };
 }
 
+export interface ShopifyCatalogAuditVariant {
+  id: string; // GID gid://shopify/ProductVariant/...
+  numericId: string;
+  sku: string;
+  title: string; // e.g. "Rojo / M", or "Default Title" for a single-variant product
+  price: number;
+}
+
 export interface ShopifyCatalogAuditProduct {
   id: string;
   numericId: string;
@@ -478,19 +507,20 @@ export interface ShopifyCatalogAuditProduct {
   handle: string;
   vendor: string;
   description: string;
-  minPrice: number;
-  maxPrice: number;
+  variants: ShopifyCatalogAuditVariant[];
 }
 
 const CATALOG_AUDIT_PAGE_SIZE = 250;
 const CATALOG_AUDIT_MAX_PAGES = 40; // safety cap (~10,000 products) to avoid runaway scans
+const CATALOG_AUDIT_VARIANTS_PER_PRODUCT = 100; // Shopify's per-product variant connection cap for a single page
 
 /**
- * Fetch every product in the store (title/handle/vendor/description/price
- * range) by paging through Shopify's `products` connection. Used by the
- * catalog Audit module — a read-only scan, mirrors `getAllProductsSEO`'s
+ * Fetch every product in the store (title/handle/vendor/description/variant
+ * prices+SKUs) by paging through Shopify's `products` connection. Used by
+ * the catalog Audit module — a read-only scan, mirrors `getAllProductsSEO`'s
  * pagination but pulls the catalog fields that module checks instead of SEO
- * fields.
+ * fields. Price issues are evaluated per-variant (see `evaluateCatalogAudit`)
+ * so a single mispriced SKU doesn't get lost in a product-level min/max.
  */
 export async function getAllProductsCatalogAudit(
   credentials: ShopifyCredentials
@@ -500,7 +530,7 @@ export async function getAllProductsCatalogAudit(
   let page = 0;
 
   const query = `
-    query getAllProductsCatalogAudit($first: Int!, $after: String) {
+    query getAllProductsCatalogAudit($first: Int!, $after: String, $variantsFirst: Int!) {
       products(first: $first, after: $after) {
         pageInfo {
           hasNextPage
@@ -513,12 +543,14 @@ export async function getAllProductsCatalogAudit(
             handle
             vendor
             description
-            priceRangeV2 {
-              minVariantPrice {
-                amount
-              }
-              maxVariantPrice {
-                amount
+            variants(first: $variantsFirst) {
+              edges {
+                node {
+                  id
+                  sku
+                  title
+                  price
+                }
               }
             }
           }
@@ -539,14 +571,13 @@ export async function getAllProductsCatalogAudit(
             handle: string;
             vendor?: string;
             description?: string;
-            priceRangeV2?: {
-              minVariantPrice?: { amount: string };
-              maxVariantPrice?: { amount: string };
+            variants?: {
+              edges: Array<{ node: { id: string; sku?: string; title?: string; price: string } }>;
             };
           };
         }>;
       };
-    }>(credentials, query, { first: CATALOG_AUDIT_PAGE_SIZE, after: cursor });
+    }>(credentials, query, { first: CATALOG_AUDIT_PAGE_SIZE, after: cursor, variantsFirst: CATALOG_AUDIT_VARIANTS_PER_PRODUCT });
 
     const edges = data?.products?.edges || [];
     edges.forEach(({ node }) => {
@@ -557,8 +588,13 @@ export async function getAllProductsCatalogAudit(
         handle: node.handle || '',
         vendor: node.vendor || '',
         description: node.description || '',
-        minPrice: parseFloat(node.priceRangeV2?.minVariantPrice?.amount || '0') || 0,
-        maxPrice: parseFloat(node.priceRangeV2?.maxVariantPrice?.amount || '0') || 0,
+        variants: (node.variants?.edges || []).map((e) => ({
+          id: e.node.id,
+          numericId: extractVariantNumericId(e.node.id),
+          sku: (e.node.sku || '').trim(),
+          title: e.node.title || '',
+          price: parseFloat(e.node.price || '0') || 0,
+        })),
       });
     });
 
@@ -576,7 +612,7 @@ export async function getAllProductsCatalogAudit(
 /**
  * Batch fetch multiple products by IDs for the catalog Audit's bulk-update
  * preview — same chunked `nodes` approach as `getProductsByIds`, pulling
- * vendor/description/price instead of SEO fields.
+ * vendor/description/variants (SKU + price) instead of SEO fields.
  */
 export async function getCatalogAuditProductsByIds(
   credentials: ShopifyCredentials,
@@ -591,7 +627,7 @@ export async function getCatalogAuditProductsByIds(
     const gids = slice.map(formatProductGid);
 
     const query = `
-      query getMultipleCatalogAuditProducts($ids: [ID!]!) {
+      query getMultipleCatalogAuditProducts($ids: [ID!]!, $variantsFirst: Int!) {
         nodes(ids: $ids) {
           ... on Product {
             id
@@ -599,12 +635,14 @@ export async function getCatalogAuditProductsByIds(
             handle
             vendor
             description
-            priceRangeV2 {
-              minVariantPrice {
-                amount
-              }
-              maxVariantPrice {
-                amount
+            variants(first: $variantsFirst) {
+              edges {
+                node {
+                  id
+                  sku
+                  title
+                  price
+                }
               }
             }
           }
@@ -619,12 +657,11 @@ export async function getCatalogAuditProductsByIds(
         handle: string;
         vendor?: string;
         description?: string;
-        priceRangeV2?: {
-          minVariantPrice?: { amount: string };
-          maxVariantPrice?: { amount: string };
+        variants?: {
+          edges: Array<{ node: { id: string; sku?: string; title?: string; price: string } }>;
         };
       } | null>;
-    }>(credentials, query, { ids: gids });
+    }>(credentials, query, { ids: gids, variantsFirst: CATALOG_AUDIT_VARIANTS_PER_PRODUCT });
 
     if (data?.nodes) {
       data.nodes.forEach((node) => {
@@ -637,8 +674,13 @@ export async function getCatalogAuditProductsByIds(
             handle: node.handle || '',
             vendor: node.vendor || '',
             description: node.description || '',
-            minPrice: parseFloat(node.priceRangeV2?.minVariantPrice?.amount || '0') || 0,
-            maxPrice: parseFloat(node.priceRangeV2?.maxVariantPrice?.amount || '0') || 0,
+            variants: (node.variants?.edges || []).map((e) => ({
+              id: e.node.id,
+              numericId: extractVariantNumericId(e.node.id),
+              sku: (e.node.sku || '').trim(),
+              title: e.node.title || '',
+              price: parseFloat(e.node.price || '0') || 0,
+            })),
           });
         }
       });
@@ -653,12 +695,16 @@ export async function getCatalogAuditProductsByIds(
 }
 
 /**
- * Updates a product's vendor, description and/or price from the catalog
- * Audit's bulk-update flow. Unlike `updateProductSEO`, this DOES write
- * catalog data (vendor/descriptionHtml via `productUpdate`, price via
- * `productVariantsBulkUpdate` applied flat across every variant) — only
+ * Updates a product's vendor, description and/or a SINGLE variant's price
+ * from the catalog Audit's bulk-update flow. Unlike `updateProductSEO`, this
+ * DOES write catalog data (vendor/descriptionHtml via `productUpdate`, price
+ * via `productVariantsBulkUpdate` targeting exactly one variant ID) — only
  * triggered when the user explicitly uploads a file through "Actualización
  * masiva" and confirms, never by the read-only scan itself.
+ *
+ * Price changes are scoped to one SKU/variant, not the whole product: a
+ * product can have several variants and only one of them may have the bad
+ * placeholder price, so this must never touch the others.
  */
 export async function updateProductCatalogFields(
   credentials: ShopifyCredentials,
@@ -666,7 +712,7 @@ export async function updateProductCatalogFields(
     numericId: string;
     vendor?: string;
     description?: string;
-    price?: number;
+    variantPriceUpdate?: { variantId: string; price: number };
   }
 ): Promise<{
   success: boolean;
@@ -738,33 +784,12 @@ export async function updateProductCatalogFields(
     }
   }
 
-  if (payload.price !== undefined && payload.price !== null) {
+  if (payload.variantPriceUpdate) {
     try {
-      const variantQuery = `
-        query getProductVariantIdsForPriceUpdate($id: ID!) {
-          product(id: $id) {
-            variants(first: 100) {
-              edges {
-                node {
-                  id
-                }
-              }
-            }
-          }
-        }
-      `;
-      const variantData = await executeGraphQL<{
-        product: { variants?: { edges: Array<{ node: { id: string } }> } } | null;
-      }>(credentials, variantQuery, { id: gid });
-
-      const variantIds = (variantData?.product?.variants?.edges || []).map((e) => e.node.id);
-      if (variantIds.length === 0) {
-        return { success: false, errorMessage: 'No se encontraron variantes del producto para actualizar el precio.' };
-      }
-
-      const priceStr = payload.price.toFixed(2);
+      const variantGid = formatVariantGid(payload.variantPriceUpdate.variantId);
+      const priceStr = payload.variantPriceUpdate.price.toFixed(2);
       const mutation = `
-        mutation bulkUpdateVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        mutation updateVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
           productVariantsBulkUpdate(productId: $productId, variants: $variants) {
             productVariants {
               id
@@ -784,7 +809,7 @@ export async function updateProductCatalogFields(
         };
       }>(credentials, mutation, {
         productId: gid,
-        variants: variantIds.map((id) => ({ id, price: priceStr })),
+        variants: [{ id: variantGid, price: priceStr }],
       });
 
       const userErrors = data?.productVariantsBulkUpdate?.userErrors || [];
@@ -794,7 +819,7 @@ export async function updateProductCatalogFields(
           errorMessage: `Shopify rechazó la actualización de precio: ${userErrors.map((e) => e.message).join('. ')}`,
         };
       }
-      updatedPrice = payload.price;
+      updatedPrice = payload.variantPriceUpdate.price;
     } catch (error: any) {
       const safeError = (error.message || 'Error de conexión al actualizar el precio.').replace(
         credentials.accessToken,
@@ -807,9 +832,19 @@ export async function updateProductCatalogFields(
   return { success: true, updatedVendor, updatedDescription, updatedPrice };
 }
 
+export interface CatalogAuditFlaggedVariant {
+  variantId: string;
+  numericId: string;
+  sku: string;
+  variantTitle: string;
+  price: number;
+  issue: 'price_zero' | 'price_placeholder';
+}
+
 export interface CatalogAuditEvaluation {
   issues: Array<'vendor' | 'price_zero' | 'price_placeholder' | 'description'>;
   messages: string[];
+  flaggedVariants: CatalogAuditFlaggedVariant[];
 }
 
 export const CATALOG_AUDIT_PLACEHOLDER_PRICES = [999999, 9999999];
@@ -821,10 +856,16 @@ export const CATALOG_AUDIT_PLACEHOLDER_PRICES = [999999, 9999999];
  * description. The scan itself is read-only; fixing what it finds happens
  * only through the "Actualización masiva" CSV/Excel upload
  * (`updateProductCatalogFields` above), never automatically.
+ *
+ * Price is evaluated per VARIANT, not per product: a product can have
+ * several SKUs and only one of them may carry the bad placeholder price, so
+ * `flaggedVariants` names exactly which SKU(s) need fixing instead of
+ * collapsing to a product-level min/max.
  */
 export function evaluateCatalogAudit(product: ShopifyCatalogAuditProduct): CatalogAuditEvaluation {
   const issues: CatalogAuditEvaluation['issues'] = [];
   const messages: string[] = [];
+  const flaggedVariants: CatalogAuditFlaggedVariant[] = [];
 
   const vendor = (product.vendor || '').trim();
   if (!vendor) {
@@ -835,24 +876,39 @@ export function evaluateCatalogAudit(product: ShopifyCatalogAuditProduct): Catal
     messages.push('Marca (vendor) configurada como "BASE".');
   }
 
-  if (product.minPrice === 0 || product.maxPrice === 0) {
-    issues.push('price_zero');
-    messages.push('Precio en $0.');
+  for (const variant of product.variants) {
+    const skuLabel = variant.sku ? `SKU ${variant.sku}` : variant.title || 'variante sin SKU';
+    if (variant.price === 0) {
+      flaggedVariants.push({
+        variantId: variant.id,
+        numericId: variant.numericId,
+        sku: variant.sku,
+        variantTitle: variant.title,
+        price: variant.price,
+        issue: 'price_zero',
+      });
+      messages.push(`${skuLabel}: precio en $0.`);
+    } else if (CATALOG_AUDIT_PLACEHOLDER_PRICES.includes(variant.price)) {
+      flaggedVariants.push({
+        variantId: variant.id,
+        numericId: variant.numericId,
+        sku: variant.sku,
+        variantTitle: variant.title,
+        price: variant.price,
+        issue: 'price_placeholder',
+      });
+      messages.push(`${skuLabel}: precio en $${variant.price.toLocaleString('es-MX')} (precio de referencia).`);
+    }
   }
-  const placeholderPrice = CATALOG_AUDIT_PLACEHOLDER_PRICES.find(
-    (p) => product.minPrice === p || product.maxPrice === p
-  );
-  if (placeholderPrice !== undefined) {
-    issues.push('price_placeholder');
-    messages.push(`Precio en $${placeholderPrice.toLocaleString('es-MX')} (precio de referencia).`);
-  }
+  if (flaggedVariants.some((v) => v.issue === 'price_zero')) issues.push('price_zero');
+  if (flaggedVariants.some((v) => v.issue === 'price_placeholder')) issues.push('price_placeholder');
 
   if (!(product.description || '').trim()) {
     issues.push('description');
     messages.push('Sin descripción.');
   }
 
-  return { issues, messages };
+  return { issues, messages, flaggedVariants };
 }
 
 /**

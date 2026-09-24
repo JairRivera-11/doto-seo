@@ -39,6 +39,7 @@ import {
   setDemoProductOverride,
   getDemoCatalogAudit,
   setDemoCatalogAuditOverride,
+  setDemoCatalogAuditVariantPrice,
   CatalogAuditProductLike,
   getDemoProductMedia,
   setDemoMediaOverride,
@@ -1094,12 +1095,29 @@ export function createApp(): express.Express {
       let descriptionIssues = 0;
 
       const auditRows = products.map((product) => {
-        const { issues, messages } = evaluateCatalogAudit(product);
+        const { issues, messages, flaggedVariants } = evaluateCatalogAudit(product);
         if (issues.length === 0) okCount++;
         if (issues.includes('vendor')) vendorIssues++;
         if (issues.includes('price_zero') || issues.includes('price_placeholder')) priceIssues++;
         if (issues.includes('description')) descriptionIssues++;
-        return { ...product, issues, messages };
+        return {
+          id: product.id,
+          numericId: product.numericId,
+          title: product.title,
+          handle: product.handle,
+          vendor: product.vendor,
+          description: product.description,
+          variants: product.variants.map((v) => ({ sku: v.sku, variantTitle: v.title, price: v.price })),
+          flaggedVariants: flaggedVariants.map((v) => ({
+            variantId: v.variantId,
+            sku: v.sku,
+            variantTitle: v.variantTitle,
+            price: v.price,
+            issue: v.issue,
+          })),
+          issues,
+          messages,
+        };
       });
 
       const withIssues = products.length - okCount;
@@ -1132,11 +1150,12 @@ export function createApp(): express.Express {
     }
   });
 
-  // Preview Catalog Audit bulk rows before any updates (vendor/price/description)
+  // Preview Catalog Audit bulk rows before any updates (vendor/price/description).
+  // Price targets one specific SKU/variant, never the whole product.
   app.post('/api/shopify/catalog-audit/preview-bulk', requireSession, async (req, res) => {
     const session = await getSession(req, res);
     try {
-      const { rows } = req.body; // Array of { rowNumber, productId, vendor, price, description }
+      const { rows } = req.body; // Array of { rowNumber, productId, sku, vendor, price, description }
 
       if (!Array.isArray(rows) || rows.length === 0) {
         return res.status(400).json({
@@ -1199,8 +1218,9 @@ export function createApp(): express.Express {
             productTitle: '—',
             currentVendor: '—',
             newVendor: row.vendor || '',
-            currentMinPrice: null,
-            currentMaxPrice: null,
+            sku: row.sku || '',
+            variantId: null,
+            currentPrice: null,
             newPrice: null,
             currentDescription: '—',
             newDescription: row.description || '',
@@ -1227,8 +1247,9 @@ export function createApp(): express.Express {
             productTitle: 'No encontrado en tienda',
             currentVendor: '—',
             newVendor: row.vendor || '',
-            currentMinPrice: null,
-            currentMaxPrice: null,
+            sku: row.sku || '',
+            variantId: null,
+            currentPrice: null,
             newPrice: null,
             currentDescription: '—',
             newDescription: row.description || '',
@@ -1253,34 +1274,49 @@ export function createApp(): express.Express {
           }
         }
 
-        // Price
+        // Price - scoped to ONE specific SKU/variant, never the whole product
+        const rawSku = row.sku !== undefined && row.sku !== null ? String(row.sku).trim() : '';
         const rawPriceStr = row.price !== undefined && row.price !== null ? String(row.price).trim() : '';
         let priceChanged = false;
         let parsedPrice: number | null = null;
+        let targetVariant: (typeof existingProduct.variants)[number] | undefined;
+
         if (rawPriceStr !== '') {
-          parsedPrice = parseFloat(rawPriceStr.replace(/[^0-9.\-]/g, ''));
-          if (isNaN(parsedPrice) || parsedPrice < 0) {
-            status = 'error';
-            messages.push(`Precio inválido: "${row.price}".`);
-            parsedPrice = null;
-          } else {
-            if (parsedPrice === 0) {
-              messages.push('El nuevo precio sigue siendo $0: no resuelve el problema detectado.');
-              status = 'warning';
-            } else if (CATALOG_AUDIT_PLACEHOLDER_PRICES.includes(parsedPrice)) {
-              messages.push(
-                `El nuevo precio sigue siendo $${parsedPrice.toLocaleString('es-MX')}: no resuelve el problema detectado.`
-              );
-              status = 'warning';
+          if (rawSku !== '') {
+            targetVariant = existingProduct.variants.find((v) => v.sku.toLowerCase() === rawSku.toLowerCase());
+            if (!targetVariant) {
+              status = 'error';
+              messages.push(`SKU "${rawSku}" no encontrado en este producto.`);
             }
-            if (parsedPrice !== existingProduct.minPrice || parsedPrice !== existingProduct.maxPrice) {
-              priceChanged = true;
-              fieldsToUpdate.push('price');
-              if (existingProduct.minPrice !== existingProduct.maxPrice) {
+          } else if (existingProduct.variants.length === 1) {
+            targetVariant = existingProduct.variants[0];
+          } else {
+            status = 'error';
+            messages.push(
+              `El producto tiene ${existingProduct.variants.length} variantes: especifica el SKU de la variante a corregir en la columna "SKU".`
+            );
+          }
+
+          if (targetVariant) {
+            parsedPrice = parseFloat(rawPriceStr.replace(/[^0-9.\-]/g, ''));
+            if (isNaN(parsedPrice) || parsedPrice < 0) {
+              status = 'error';
+              messages.push(`Precio inválido: "${row.price}".`);
+              parsedPrice = null;
+            } else {
+              const skuLabel = targetVariant.sku || targetVariant.title || 'esta variante';
+              if (parsedPrice === 0) {
+                messages.push(`${skuLabel}: el nuevo precio sigue siendo $0, no resuelve el problema detectado.`);
+                status = 'warning';
+              } else if (CATALOG_AUDIT_PLACEHOLDER_PRICES.includes(parsedPrice)) {
                 messages.push(
-                  'Este producto tiene variantes con precios distintos: el nuevo precio se aplicará a todas sus variantes.'
+                  `${skuLabel}: el nuevo precio sigue siendo $${parsedPrice.toLocaleString('es-MX')}, no resuelve el problema detectado.`
                 );
                 status = 'warning';
+              }
+              if (parsedPrice !== targetVariant.price) {
+                priceChanged = true;
+                fieldsToUpdate.push('price');
               }
             }
           }
@@ -1318,9 +1354,10 @@ export function createApp(): express.Express {
           productTitle: existingProduct.title,
           currentVendor: existingProduct.vendor,
           newVendor: rawNewVendor !== '' ? rawNewVendor : existingProduct.vendor,
-          currentMinPrice: existingProduct.minPrice,
-          currentMaxPrice: existingProduct.maxPrice,
-          newPrice: parsedPrice !== null ? parsedPrice : existingProduct.minPrice,
+          sku: targetVariant?.sku || rawSku,
+          variantId: targetVariant?.id || null,
+          currentPrice: targetVariant?.price ?? null,
+          newPrice: parsedPrice !== null ? parsedPrice : targetVariant?.price ?? null,
           currentDescription: existingProduct.description,
           newDescription: rawNewDesc !== '' ? rawNewDesc : existingProduct.description,
           status,
@@ -1407,8 +1444,9 @@ export function createApp(): express.Express {
               status: 'skipped',
               previousVendor: item.currentVendor || '',
               newVendor: item.currentVendor || '',
-              previousPrice: item.currentMinPrice ?? null,
-              newPrice: item.currentMinPrice ?? null,
+              sku: item.sku || '',
+              previousPrice: item.currentPrice ?? null,
+              newPrice: item.currentPrice ?? null,
               previousDescription: item.currentDescription || '',
               newDescription: item.currentDescription || '',
               updatedFields: [],
@@ -1438,7 +1476,8 @@ export function createApp(): express.Express {
                 status: 'error',
                 previousVendor: item.currentVendor || '',
                 newVendor: item.newVendor || '',
-                previousPrice: item.currentMinPrice ?? null,
+                sku: item.sku || '',
+                previousPrice: item.currentPrice ?? null,
                 newPrice: item.newPrice ?? null,
                 previousDescription: item.currentDescription || '',
                 newDescription: item.newDescription || '',
@@ -1448,21 +1487,49 @@ export function createApp(): express.Express {
               };
             }
 
-            const patch: Partial<CatalogAuditProductLike> = {};
-            if (wantsVendor) patch.vendor = item.newVendor;
-            if (wantsDescription) patch.description = item.newDescription;
-            if (wantsPrice) {
-              patch.minPrice = item.newPrice;
-              patch.maxPrice = item.newPrice;
+            const currentVariant = wantsPrice ? current.variants.find((v) => v.id === item.variantId) : undefined;
+            if (wantsPrice && !currentVariant) {
+              errorCount++;
+              addLog(
+                session,
+                'Actualización masiva de catálogo',
+                'error',
+                `Producto [${numId}]: Variante (SKU ${item.sku || '—'}) no encontrada en el catálogo demo.`,
+                numId
+              );
+              return {
+                productId: numId,
+                productTitle: current.title,
+                status: 'error',
+                previousVendor: current.vendor,
+                newVendor: item.newVendor || current.vendor,
+                sku: item.sku || '',
+                previousPrice: item.currentPrice ?? null,
+                newPrice: item.newPrice ?? null,
+                previousDescription: current.description,
+                newDescription: item.newDescription || current.description,
+                updatedFields: [],
+                errorMessage: 'Variante (SKU) no encontrada en catálogo demo.',
+                processedAt: timestamp,
+              };
             }
-            setDemoCatalogAuditOverride(session, numId, patch);
+
+            if (wantsVendor || wantsDescription) {
+              const patch: Partial<Pick<CatalogAuditProductLike, 'vendor' | 'description'>> = {};
+              if (wantsVendor) patch.vendor = item.newVendor;
+              if (wantsDescription) patch.description = item.newDescription;
+              setDemoCatalogAuditOverride(session, numId, patch);
+            }
+            if (wantsPrice && currentVariant) {
+              setDemoCatalogAuditVariantPrice(session, currentVariant.id, item.newPrice);
+            }
             successCount++;
 
             addLog(
               session,
               'Actualización masiva de catálogo',
               'success',
-              `Producto [${numId}] "${current.title}": catálogo actualizado (${item.fieldsToUpdate.join(', ')}).`,
+              `Producto [${numId}] "${current.title}"${currentVariant ? ` (SKU ${currentVariant.sku})` : ''}: catálogo actualizado (${item.fieldsToUpdate.join(', ')}).`,
               numId
             );
 
@@ -1472,8 +1539,9 @@ export function createApp(): express.Express {
               status: 'success',
               previousVendor: current.vendor,
               newVendor: wantsVendor ? item.newVendor : current.vendor,
-              previousPrice: current.minPrice,
-              newPrice: wantsPrice ? item.newPrice : current.minPrice,
+              sku: currentVariant?.sku || item.sku || '',
+              previousPrice: currentVariant?.price ?? null,
+              newPrice: wantsPrice ? item.newPrice : currentVariant?.price ?? null,
               previousDescription: current.description,
               newDescription: wantsDescription ? item.newDescription : current.description,
               updatedFields: item.fieldsToUpdate,
@@ -1483,10 +1551,31 @@ export function createApp(): express.Express {
 
           // Live Shopify Mode
           try {
+            if (wantsPrice && !item.variantId) {
+              errorCount++;
+              const errDetail = `No se pudo resolver la variante (SKU ${item.sku || '—'}) para actualizar el precio.`;
+              addLog(session, 'Actualización masiva de catálogo', 'error', `Producto [${numId}]: ${errDetail}`, numId);
+              return {
+                productId: numId,
+                productTitle: item.productTitle || '—',
+                status: 'error',
+                previousVendor: item.currentVendor || '',
+                newVendor: item.newVendor || '',
+                sku: item.sku || '',
+                previousPrice: item.currentPrice ?? null,
+                newPrice: item.newPrice ?? null,
+                previousDescription: item.currentDescription || '',
+                newDescription: item.newDescription || '',
+                updatedFields: [],
+                errorMessage: errDetail,
+                processedAt: timestamp,
+              };
+            }
+
             const payload: any = { numericId: numId };
             if (wantsVendor) payload.vendor = item.newVendor;
             if (wantsDescription) payload.description = item.newDescription;
-            if (wantsPrice) payload.price = item.newPrice;
+            if (wantsPrice) payload.variantPriceUpdate = { variantId: item.variantId, price: item.newPrice };
 
             const updateRes = await updateProductCatalogFields(credentials, payload);
 
@@ -1505,7 +1594,8 @@ export function createApp(): express.Express {
                 status: 'error',
                 previousVendor: item.currentVendor || '',
                 newVendor: item.newVendor || '',
-                previousPrice: item.currentMinPrice ?? null,
+                sku: item.sku || '',
+                previousPrice: item.currentPrice ?? null,
                 newPrice: item.newPrice ?? null,
                 previousDescription: item.currentDescription || '',
                 newDescription: item.newDescription || '',
@@ -1520,7 +1610,7 @@ export function createApp(): express.Express {
               session,
               'Actualización masiva de catálogo',
               'success',
-              `Producto [${numId}] "${item.productTitle || numId}": catálogo actualizado en Shopify (${item.fieldsToUpdate.join(', ')}).`,
+              `Producto [${numId}] "${item.productTitle || numId}"${item.sku ? ` (SKU ${item.sku})` : ''}: catálogo actualizado en Shopify (${item.fieldsToUpdate.join(', ')}).`,
               numId
             );
 
@@ -1530,8 +1620,9 @@ export function createApp(): express.Express {
               status: 'success',
               previousVendor: item.currentVendor || '',
               newVendor: updateRes.updatedVendor ?? item.newVendor ?? item.currentVendor,
-              previousPrice: item.currentMinPrice ?? null,
-              newPrice: updateRes.updatedPrice ?? item.newPrice ?? item.currentMinPrice,
+              sku: item.sku || '',
+              previousPrice: item.currentPrice ?? null,
+              newPrice: updateRes.updatedPrice ?? item.newPrice ?? item.currentPrice,
               previousDescription: item.currentDescription || '',
               newDescription: updateRes.updatedDescription ?? item.newDescription ?? item.currentDescription,
               updatedFields: item.fieldsToUpdate,
@@ -1553,7 +1644,8 @@ export function createApp(): express.Express {
               status: 'error',
               previousVendor: item.currentVendor || '',
               newVendor: item.newVendor || '',
-              previousPrice: item.currentMinPrice ?? null,
+              sku: item.sku || '',
+              previousPrice: item.currentPrice ?? null,
               newPrice: item.newPrice ?? null,
               previousDescription: item.currentDescription || '',
               newDescription: item.newDescription || '',

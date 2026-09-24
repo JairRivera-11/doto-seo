@@ -135,8 +135,9 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
           productTitle: r.productTitle,
           currentVendor: r.currentVendor,
           newVendor: r.newVendor,
-          currentMinPrice: r.currentMinPrice,
-          currentMaxPrice: r.currentMaxPrice,
+          sku: r.sku,
+          variantId: r.variantId,
+          currentPrice: r.currentPrice,
           newPrice: r.newPrice,
           currentDescription: r.currentDescription,
           newDescription: r.newDescription,
@@ -341,6 +342,7 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11px] text-slate-400">
               <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Product ID (Obligatorio)</span>
               <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Marca</span>
+              <span className="bg-white px-2 py-1 rounded-md border border-slate-200">SKU (para Precio)</span>
               <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Precio</span>
               <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Descripción</span>
             </div>
@@ -378,8 +380,9 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
                 se clasifica como <em>"Sin cambios"</em> y no consume operaciones innecesarias.
               </li>
               <li>
-                <strong>Precio por variante:</strong> Si un producto tiene varias variantes con precios distintos, el
-                nuevo precio se aplica por igual a todas ellas.
+                <strong>Precio a nivel de SKU:</strong> El precio corrige únicamente la variante indicada en la
+                columna "SKU" — nunca las demás variantes del mismo producto. Si el producto tiene una sola variante,
+                puedes dejar el SKU en blanco.
               </li>
             </ul>
           </div>
@@ -574,6 +577,7 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
                     <th className="py-3 px-3.5 w-12 text-center">Estado</th>
                     <th className="py-3 px-3.5 w-36">Product ID</th>
                     <th className="py-3 px-3.5 min-w-[180px]">Producto</th>
+                    <th className="py-3 px-3.5 min-w-[140px]">SKU (precio)</th>
                     <th className="py-3 px-3.5 min-w-[140px]">Campo(s)</th>
                     <th className="py-3 px-3.5 min-w-[220px]">Valor actual en Shopify</th>
                     <th className="py-3 px-3.5 min-w-[220px]">Nuevo valor propuesto</th>
@@ -582,7 +586,7 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
                 <tbody className="divide-y divide-slate-100">
                   {displayedPreviewRows.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400">
+                      <td colSpan={7} className="py-8 text-center text-slate-400">
                         No hay productos en esta categoría.
                       </td>
                     </tr>
@@ -643,6 +647,8 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
 
                           <td className="py-3 px-3.5 font-medium text-slate-900">{row.productTitle}</td>
 
+                          <td className="py-3 px-3.5 font-mono text-slate-600">{row.sku || '—'}</td>
+
                           <td className="py-3 px-3.5">
                             {row.fieldsToUpdate.length === 0 ? (
                               <span className="text-slate-400 italic">Sin cambios</span>
@@ -667,14 +673,10 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
                                 <span className="text-slate-700">{row.currentVendor || '(Vacía)'}</span>
                               </div>
                             )}
-                            {row.currentMinPrice !== null && (
+                            {row.currentPrice !== null && (
                               <div>
                                 <span className="text-slate-400">precio: </span>
-                                <span className="text-slate-700">
-                                  {row.currentMinPrice === row.currentMaxPrice
-                                    ? formatMoney(row.currentMinPrice)
-                                    : `${formatMoney(row.currentMinPrice)} – ${formatMoney(row.currentMaxPrice)}`}
-                                </span>
+                                <span className="text-slate-700">{formatMoney(row.currentPrice)}</span>
                               </div>
                             )}
                             {row.currentDescription && row.currentDescription !== '—' && (
@@ -843,6 +845,7 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
                   <tr>
                     <th className="py-3 px-3.5 w-36">Product ID</th>
                     <th className="py-3 px-3.5 min-w-[180px]">Producto</th>
+                    <th className="py-3 px-3.5 min-w-[130px]">SKU</th>
                     <th className="py-3 px-3.5 w-28">Estado</th>
                     <th className="py-3 px-3.5 min-w-[150px]">Cambios</th>
                     <th className="py-3 px-3.5 min-w-[200px]">Detalle / Error</th>
@@ -856,6 +859,7 @@ export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ on
                       <tr key={r.productId} className="hover:bg-slate-50/80 transition-colors">
                         <td className="py-3 px-3.5 font-mono text-slate-900 font-semibold">{r.productId}</td>
                         <td className="py-3 px-3.5 font-medium text-slate-900">{r.productTitle}</td>
+                        <td className="py-3 px-3.5 font-mono text-slate-600">{r.sku || '—'}</td>
                         <td className="py-3 px-3.5">
                           {isSuccess && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800">

@@ -95,6 +95,20 @@ export type ActiveTab = 'dashboard' | 'seo' | 'audit' | 'alt_text' | 'templates'
 
 export type CatalogAuditIssueType = 'vendor' | 'price_zero' | 'price_placeholder' | 'description';
 
+export interface CatalogAuditVariant {
+  sku: string;
+  variantTitle: string;
+  price: number;
+}
+
+export interface CatalogAuditFlaggedVariant {
+  variantId: string;
+  sku: string;
+  variantTitle: string;
+  price: number;
+  issue: 'price_zero' | 'price_placeholder';
+}
+
 export interface CatalogAuditRow {
   id: string;
   numericId: string;
@@ -102,8 +116,8 @@ export interface CatalogAuditRow {
   handle: string;
   vendor: string;
   description: string;
-  minPrice: number;
-  maxPrice: number;
+  variants: CatalogAuditVariant[];
+  flaggedVariants: CatalogAuditFlaggedVariant[];
   issues: CatalogAuditIssueType[];
   messages: string[];
 }
@@ -123,8 +137,9 @@ export interface CatalogBulkPreviewRow {
   productTitle: string;
   currentVendor: string;
   newVendor: string;
-  currentMinPrice: number | null;
-  currentMaxPrice: number | null;
+  sku: string;
+  variantId: string | null;
+  currentPrice: number | null;
   newPrice: number | null;
   currentDescription: string;
   newDescription: string;
@@ -148,6 +163,7 @@ export interface CatalogBulkExecutionResult {
   status: 'success' | 'error' | 'skipped';
   previousVendor: string;
   newVendor: string;
+  sku: string;
   previousPrice: number | null;
   newPrice: number | null;
   previousDescription: string;
