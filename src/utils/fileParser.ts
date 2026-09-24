@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { ExecutionResult, SEOAuditRow } from '../types/seo';
+import { ExecutionResult, SEOAuditRow, CatalogAuditRow } from '../types/seo';
 
 export interface ParsedFileRow {
   rowNumber: number;
@@ -150,7 +150,10 @@ export async function parseUploadFile(file: File): Promise<{
   };
 }> {
   const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array' });
+  // codepage 65001 = UTF-8. Without it, a .csv with no BOM gets its accented
+  // characters (á, é, í, ó, ú, ñ) double-decoded as Latin-1, mangling them
+  // (confirmed by hand: "ó" round-tripped as "Ã³").
+  const workbook = XLSX.read(data, { type: 'array', codepage: 65001 });
 
   if (workbook.SheetNames.length === 0) {
     throw new Error('El archivo cargado no contiene hojas de cálculo.');
@@ -210,6 +213,265 @@ export async function parseUploadFile(file: File): Promise<{
   });
 
   return { rows: parsedRows, columnMapping };
+}
+
+/**
+ * Identifies column mappings for the catalog Audit's bulk-update upload
+ * (Marca/Precio/Descripción instead of the SEO fields above).
+ */
+function detectCatalogAuditColumns(headers: string[]): {
+  productIdCol?: string;
+  vendorCol?: string;
+  priceCol?: string;
+  descriptionCol?: string;
+} {
+  let productIdCol: string | undefined;
+  let vendorCol: string | undefined;
+  let priceCol: string | undefined;
+  let descriptionCol: string | undefined;
+
+  for (const h of headers) {
+    const norm = normalizeHeader(h);
+
+    if (!productIdCol) {
+      if (
+        norm === 'productid' ||
+        norm === 'id' ||
+        norm === 'idproducto' ||
+        norm === 'shopifyid' ||
+        norm === 'shopifyproductid' ||
+        norm === 'product' ||
+        norm === 'identificador' ||
+        norm === 'idproduct' ||
+        norm === 'idshopify' ||
+        norm === 'productidentifier'
+      ) {
+        productIdCol = h;
+      }
+    }
+
+    if (!vendorCol) {
+      if (norm === 'marca' || norm === 'vendor' || norm === 'brand' || norm === 'proveedor' || norm === 'marcavendor') {
+        vendorCol = h;
+      }
+    }
+
+    if (!priceCol) {
+      if (norm === 'precio' || norm === 'price' || norm === 'preciolista' || norm === 'preciopvp' || norm === 'preciodeventa') {
+        priceCol = h;
+      }
+    }
+
+    if (!descriptionCol) {
+      if (
+        norm === 'descripcion' ||
+        norm === 'description' ||
+        norm === 'descripciondelproducto' ||
+        norm === 'productdescription'
+      ) {
+        descriptionCol = h;
+      }
+    }
+  }
+
+  if (!productIdCol) {
+    productIdCol = headers.find((h) => {
+      const n = normalizeHeader(h);
+      return n.includes('id') && !n.includes('marca') && !n.includes('vendor') && !n.includes('precio') && !n.includes('price') && !n.includes('desc');
+    });
+  }
+  if (!vendorCol) {
+    vendorCol = headers.find((h) => {
+      const n = normalizeHeader(h);
+      return n.includes('marca') || n.includes('vendor') || n.includes('brand');
+    });
+  }
+  if (!priceCol) {
+    priceCol = headers.find((h) => {
+      const n = normalizeHeader(h);
+      return n.includes('precio') || n.includes('price');
+    });
+  }
+  if (!descriptionCol) {
+    descriptionCol = headers.find((h) => {
+      const n = normalizeHeader(h);
+      return n.includes('desc');
+    });
+  }
+
+  return { productIdCol, vendorCol, priceCol, descriptionCol };
+}
+
+export interface CatalogAuditParsedRow {
+  rowNumber: number;
+  productId: string;
+  vendor?: string;
+  price?: string;
+  description?: string;
+}
+
+/**
+ * Reads and parses an uploaded file (.csv, .xlsx, .xls) for the catalog
+ * Audit's bulk-update flow. Mirrors `parseUploadFile` above but detects
+ * Marca/Precio/Descripción columns instead of the SEO ones.
+ */
+export async function parseCatalogAuditUploadFile(file: File): Promise<{
+  rows: CatalogAuditParsedRow[];
+  columnMapping: {
+    productIdCol?: string;
+    vendorCol?: string;
+    priceCol?: string;
+    descriptionCol?: string;
+  };
+}> {
+  const data = await file.arrayBuffer();
+  // codepage 65001 = UTF-8. Without it, a .csv with no BOM gets its accented
+  // characters (á, é, í, ó, ú, ñ) double-decoded as Latin-1, mangling them
+  // (confirmed by hand: "ó" round-tripped as "Ã³").
+  const workbook = XLSX.read(data, { type: 'array', codepage: 65001 });
+
+  if (workbook.SheetNames.length === 0) {
+    throw new Error('El archivo cargado no contiene hojas de cálculo.');
+  }
+
+  const firstSheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[firstSheetName];
+  const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false });
+
+  if (jsonRows.length === 0) {
+    throw new Error('El archivo está vacío o no contiene filas con datos.');
+  }
+
+  const headers = Object.keys(jsonRows[0]);
+  const columnMapping = detectCatalogAuditColumns(headers);
+
+  if (!columnMapping.productIdCol) {
+    throw new Error(
+      `No se encontró la columna obligatoria de "Product ID". Columnas detectadas: ${headers.join(', ')}`
+    );
+  }
+
+  const parsedRows: CatalogAuditParsedRow[] = [];
+
+  jsonRows.forEach((row, index) => {
+    const rawId = String(row[columnMapping.productIdCol!] || '').trim();
+    if (
+      !rawId &&
+      !row[columnMapping.vendorCol || ''] &&
+      !row[columnMapping.priceCol || ''] &&
+      !row[columnMapping.descriptionCol || '']
+    ) {
+      return;
+    }
+
+    const rowItem: CatalogAuditParsedRow = {
+      rowNumber: index + 2,
+      productId: rawId,
+    };
+
+    if (columnMapping.vendorCol && row[columnMapping.vendorCol] !== undefined) {
+      const val = String(row[columnMapping.vendorCol]).trim();
+      if (val !== '') rowItem.vendor = val;
+    }
+
+    if (columnMapping.priceCol && row[columnMapping.priceCol] !== undefined) {
+      const val = String(row[columnMapping.priceCol]).trim();
+      if (val !== '') rowItem.price = val;
+    }
+
+    if (columnMapping.descriptionCol && row[columnMapping.descriptionCol] !== undefined) {
+      const val = String(row[columnMapping.descriptionCol]).trim();
+      if (val !== '') rowItem.description = val;
+    }
+
+    parsedRows.push(rowItem);
+  });
+
+  return { rows: parsedRows, columnMapping };
+}
+
+/**
+ * Downloads the catalog Audit's bulk-update CSV template, with example rows
+ * that each fill in only the one field that needs fixing — showing that a
+ * blank cell means "leave this field untouched in Shopify" (same convention
+ * as the SEO bulk-update template).
+ */
+export function downloadCatalogAuditCSVTemplate(): void {
+  const headers = ['Product ID', 'Marca', 'Precio', 'Descripción'];
+  const sampleRows = [
+    ['1112223334445', 'Doto Accesorios', '349.00', ''],
+    ['2223334445556', 'Doto Accesorios', '', 'Funda protectora de silicón transparente resistente a caídas, compatible con carga inalámbrica.'],
+    ['3334445556667', '', '', 'Mica de cristal templado 9H con instalación fácil sin burbujas y dureza anti-rayaduras.'],
+    ['4445556667778', 'Doto Accesorios', '199.00', ''],
+  ];
+
+  const csvContent = [
+    headers.join(','),
+    ...sampleRows.map((row) =>
+      row
+        .map((val) => {
+          if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+            return `"${val.replace(/"/g, '""')}"`;
+          }
+          return val;
+        })
+        .join(',')
+    ),
+  ].join('\r\n');
+
+  const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', 'plantilla_doto_auditoria_catalogo.csv');
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+/**
+ * Downloads Excel (.xlsx) template for the catalog Audit's bulk-update flow,
+ * with a Productos sheet plus an Instrucciones sheet — same two-sheet shape
+ * as `downloadExcelTemplate` for SEO.
+ */
+export function downloadCatalogAuditExcelTemplate(): void {
+  const wb = XLSX.utils.book_new();
+
+  const headers = ['Product ID', 'Marca', 'Precio', 'Descripción'];
+  const sampleData = [
+    headers,
+    ['1112223334445', 'Doto Accesorios', '349.00', ''],
+    ['2223334445556', 'Doto Accesorios', '', 'Funda protectora de silicón transparente resistente a caídas, compatible con carga inalámbrica.'],
+    ['3334445556667', '', '', 'Mica de cristal templado 9H con instalación fácil sin burbujas y dureza anti-rayaduras.'],
+    ['4445556667778', 'Doto Accesorios', '199.00', ''],
+  ];
+
+  const wsProductos = XLSX.utils.aoa_to_sheet(sampleData);
+  wsProductos['!cols'] = [{ wch: 18 }, { wch: 22 }, { wch: 14 }, { wch: 70 }];
+  XLSX.utils.book_append_sheet(wb, wsProductos, 'Productos');
+
+  const instruccionesData = [
+    ['INSTRUCCIONES DE USO — PLANTILLA AUDITORÍA DE CATÁLOGO DOTO'],
+    [''],
+    ['Campo', 'Requerido', 'Recomendación / Reglas', 'Comportamiento si se deja vacío'],
+    ['Product ID', 'SÍ (Obligatorio)', 'Debe ser el ID numérico de Shopify del producto (ej: 1234567890123).', 'La fila será rechazada con error.'],
+    ['Marca', 'Opcional', 'Nombre real de la marca/proveedor. Sustituye valores "BASE" o vacíos.', 'NO se modifica la marca actual en Shopify.'],
+    ['Precio', 'Opcional', 'Número sin símbolo de moneda (ej: 349.00). Se aplica a TODAS las variantes del producto.', 'NO se modifica el precio actual en Shopify.'],
+    ['Descripción', 'Opcional', 'Texto plano de la descripción del producto.', 'NO se modifica la descripción actual.'],
+    [''],
+    ['REGLAS CLAVE:'],
+    ['1. Solo se modifican Marca, Precio y/o Descripción — ningún otro dato del producto se altera (handle, SEO, imágenes, variantes, inventario).'],
+    ['2. Modo "Solo cambios": Si el nuevo valor es idéntico al actual en Shopify, no se genera actualización innecesaria.'],
+    ['3. Si dejas una celda en blanco, el valor actual en Shopify se conserva sin tocar.'],
+    ['4. Si el producto tiene varias variantes con precios distintos, el nuevo precio se aplica por igual a todas ellas.'],
+    ['5. Antes de actualizar la tienda real, siempre verás una vista previa de validación con semáforo (verde/amarillo/rojo).'],
+  ];
+
+  const wsInstrucciones = XLSX.utils.aoa_to_sheet(instruccionesData);
+  wsInstrucciones['!cols'] = [{ wch: 22 }, { wch: 18 }, { wch: 60 }, { wch: 45 }];
+  XLSX.utils.book_append_sheet(wb, wsInstrucciones, 'Instrucciones');
+
+  XLSX.writeFile(wb, 'plantilla_doto_auditoria_catalogo.xlsx');
 }
 
 /**
@@ -354,6 +616,59 @@ export function downloadSEOAuditSelectionCSV(rows: SEOAuditRow[]): void {
   link.setAttribute('href', url);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   link.setAttribute('download', `auditoria_seo_seleccion_${timestamp}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
+/**
+ * Downloads a CSV of the catalog audit results (marca/precio/descripción
+ * issues) so the flagged products can be reviewed or shared without needing
+ * to keep the app open — this audit is read-only, so unlike the SEO audit
+ * CSV this one isn't meant to be re-uploaded anywhere.
+ */
+export function downloadCatalogAuditCSV(rows: CatalogAuditRow[]): void {
+  const headers = [
+    'Product ID',
+    'Título',
+    'Handle',
+    'Marca (Vendor)',
+    'Precio Mínimo',
+    'Precio Máximo',
+    'Descripción',
+    'Problemas Detectados',
+  ];
+
+  const csvContent = [
+    headers.join(','),
+    ...rows.map((row) =>
+      [
+        row.numericId,
+        row.title,
+        row.handle,
+        row.vendor.trim() === '' ? '(Vacía)' : row.vendor,
+        row.minPrice,
+        row.maxPrice,
+        row.description.trim() === '' ? '(Sin descripción)' : 'Con descripción',
+        row.messages.join(' | ') || 'Sin problemas',
+      ]
+        .map((val) => {
+          const str = String(val ?? '');
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        })
+        .join(',')
+    ),
+  ].join('\r\n');
+
+  const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  link.setAttribute('download', `auditoria_catalogo_doto_${timestamp}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

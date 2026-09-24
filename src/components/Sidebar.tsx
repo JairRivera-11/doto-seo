@@ -3,6 +3,7 @@ import { ActiveTab, SessionStats } from '../types/seo';
 import {
   LayoutDashboard,
   Search,
+  ShieldAlert,
   FileDown,
   Activity,
   ShieldCheck,
@@ -31,6 +32,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onSelectTab, stats 
       icon: Search,
       badge: stats.pendingChanges > 0 ? `${stats.pendingChanges} pendientes` : null,
       badgeColor: 'bg-[#6012C3] text-white',
+    },
+    {
+      id: 'audit' as ActiveTab,
+      label: 'Auditoría',
+      icon: ShieldAlert,
+      badge: null,
     },
     {
       id: 'alt_text' as ActiveTab,

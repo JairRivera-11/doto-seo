@@ -5,12 +5,14 @@
 ---
 
 ## 1. ¿Qué es Doto SEO?
-Doto SEO es una herramienta enfocada exclusivamente en optimizar tres metadatos críticos de productos:
+Doto SEO es una herramienta enfocada principalmente en optimizar tres metadatos críticos de productos:
 1. **URL Handle** (slug de la URL pública del producto)
 2. **SEO Title** (título para buscadores como Google)
 3. **Meta Description SEO** (descripción en los resultados orgánicos)
 
-El identificador principal es siempre el **Shopify Product ID** (ID numérico). La herramienta **NO** altera precios, inventario, imágenes, descripciones HTML, variantes ni ningún otro campo del catálogo.
+El identificador principal es siempre el **Shopify Product ID** (ID numérico). El módulo de SEO **NO** altera precios, inventario, imágenes, descripciones HTML, variantes ni ningún otro campo del catálogo.
+
+Adicionalmente, el módulo de **Auditoría** (ver sección 12) detecta productos con Marca vacía o en "BASE", Precio en $0, $999,999 o $9,999,999, y productos sin Descripción. Ese escaneo es de solo lectura — corregir lo detectado es **opcional** y solo ocurre si subes un archivo CSV/Excel a "Actualización masiva" dentro de Auditoría y confirmas explícitamente; ahí sí se modifican Marca (vendor), Precio y/o Descripción en Shopify (nunca handle, SEO, imágenes ni inventario).
 
 ---
 
@@ -158,7 +160,25 @@ El reporte está 100% libre de credenciales o tokens.
 
 ---
 
-## 13. Arquitectura de Seguridad y Privacidad
+## 13. Cómo Usar el Módulo de Auditoría de Catálogo
+1. Ve a **Auditoría** en la barra lateral.
+2. En la pestaña **Auditoría**, haz clic en **Escanear catálogo**. La app recorre todo el catálogo (con paginación) y detecta:
+   - Productos con **Marca** (vendor) vacía o configurada como `BASE`.
+   - Productos con **Precio** en `$0`, `$999,999` o `$9,999,999` (valores de referencia/placeholder).
+   - Productos **sin Descripción**.
+3. Usa los filtros (Marca, Precio, Sin descripción, Sin problemas) y el buscador para revisar los resultados, o descarga un **reporte CSV** de lo encontrado.
+4. Este escaneo es **de solo lectura**. Para corregir lo detectado tienes dos opciones:
+   - Editar el producto directamente en el **Admin de Shopify** (botón "Ver en Shopify" en cada fila).
+   - Corregirlo en lote desde la pestaña **Actualización masiva** (siguiente paso).
+5. En **Actualización masiva**, descarga la **plantilla de ejemplo** (CSV o Excel) con las columnas `Product ID`, `Marca`, `Precio` y `Descripción`.
+6. Llena solo las columnas que necesites corregir por producto — **una celda vacía significa "no tocar ese campo"**, igual que en la actualización masiva de SEO. Por ejemplo, para arreglar solo el precio de un producto, deja Marca y Descripción vacías en esa fila.
+7. Sube tu archivo `.csv`, `.xlsx` o `.xls`. La app valida cada fila contra los valores actuales en Shopify y muestra una **vista previa con semáforo** (mismas categorías que en SEO: ✅ Válido, ⚠️ Advertencia, ❌ Error, ⚪ Sin cambios), incluyendo avisos cuando el nuevo valor propuesto no resuelve el problema detectado (p. ej. sigues dejando el precio en $0).
+8. Revisa la vista previa y haz clic en **Actualizar productos** y confirma en la ventana modal.
+9. **A diferencia del módulo de SEO, esta acción sí modifica Marca, Precio y/o Descripción reales en Shopify** — revisa siempre la vista previa antes de confirmar. Si un producto tiene varias variantes con precios distintos, el nuevo precio se aplica por igual a todas sus variantes.
+
+---
+
+## 14. Arquitectura de Seguridad y Privacidad
 - **Cero almacenamiento en disco o base de datos:** No se usa Firebase, Supabase, MySQL, Postgres, MongoDB, Redis ni ningún otro store externo — ni siquiera para desplegar en Vercel.
 - **Sesión en una única cookie cifrada, no en memoria del servidor:** El token de Shopify, las API Keys de IA y el resto de la sesión viven **sellados y cifrados** (AES vía `iron-session`) dentro de una cookie `httpOnly` en tu propio navegador — nunca en texto plano, nunca accesible por JavaScript ni por ningún script de terceros, y nunca en un archivo ni base de datos del servidor. El servidor descifra esa cookie en cada petición y no la recuerda entre una y otra; esto es intencional y necesario para funcionar correctamente en plataformas serverless como Vercel, donde no existe un proceso persistente que pueda "recordar" nada entre peticiones.
 - **Sin `localStorage`, `sessionStorage` ni `IndexedDB`:** Ninguna credencial se guarda en almacenamiento del navegador accesible por JavaScript.
@@ -168,14 +188,14 @@ El reporte está 100% libre de credenciales o tokens.
 
 ---
 
-## 14. Confirmación de No-Almacenamiento
+## 15. Confirmación de No-Almacenamiento
 Al pulsar el botón **Desconectar**, la cookie de sesión se destruye de inmediato y de forma irreversible.
 
 A diferencia de versiones anteriores de esta app, **reiniciar el servidor ya NO cierra tu sesión** — la cookie sigue viva en tu navegador (por defecto hasta 14 días, o hasta que la borres/desconectes) porque así es como Vercel necesita que funcione: no hay un proceso de servidor persistente del que depender. Si prefieres que un reinicio del servidor cierre la sesión, simplemente haz clic en **Desconectar** o borra las cookies del sitio en tu navegador.
 
 ---
 
-## 15. Cómo Detener la Aplicación
+## 16. Cómo Detener la Aplicación
 Para cerrar la aplicación de manera segura:
 1. En la barra superior, haz clic en **Desconectar** para eliminar la cookie de sesión inmediatamente (recomendado — ver sección 14).
 2. En la terminal donde ejecutaste el comando, presiona:
@@ -186,15 +206,19 @@ Para cerrar la aplicación de manera segura:
 
 ---
 
-## 16. Cómo Desplegar en Vercel
+## 17. Cómo Desplegar en Vercel
 La app está preparada para desplegarse en Vercel sin infraestructura adicional (sin base de datos, sin Redis/KV):
 
-1. **Sube el repositorio** a GitHub/GitLab/Bitbucket y [impórtalo en Vercel](https://vercel.com/new), o usa la CLI (`vc deploy`) desde esta carpeta. Vercel detecta `server.ts` automáticamente (Express con cero configuración).
-2. **Variables de entorno del proyecto** (Vercel → Settings → Environment Variables):
+1. **Sube el repositorio** a GitHub/GitLab/Bitbucket y [impórtalo en Vercel](https://vercel.com/new), o usa la CLI (`vc deploy`) desde esta carpeta.
+2. **Cómo corre en Vercel** (a diferencia de local, donde un único proceso Express sirve todo):
+   - El frontend se compila a `public/` vía el script `vercel-build` (`vite build`) y Vercel lo sirve como archivos estáticos desde su CDN.
+   - Todas las rutas `/api/shopify/**` se sirven mediante una función serverless en `api/[...path].ts`, que reutiliza exactamente la misma app Express (`server/app.ts`) que corre en local — Vercel enruta automáticamente cualquier `/api/*` a esa función por el nombre del archivo, sin necesidad de reglas adicionales.
+   - `vercel.json` fija `outputDirectory: "public"` (Vite no compila al `dist/` que Vercel espera por defecto).
+3. **Variables de entorno del proyecto** (Vercel → Settings → Environment Variables):
    - `SESSION_SECRET`: el mismo tipo de valor de la sección 3 (mínimo 32 caracteres) — genera uno distinto al de tu entorno local con `openssl rand -base64 32`.
    - `NODE_ENV`: Vercel la define como `production` automáticamente; no la agregues manualmente.
-3. **Build Command**: Vercel usa el script `vercel-build` (`vite build`) automáticamente si existe en `package.json` — ya está configurado, no requiere ajuste manual.
-4. **Node.js Version**: Vercel respeta el campo `engines.node` de `package.json` (`>=22.13.0`, requerido por `iron-session`); confirma en Settings → General que la versión de Function Runtime sea 22.x o superior.
-5. Una vez desplegado, entra a tu URL de Vercel y conecta tu tienda normalmente (o usa el catálogo demo) — la sesión completa (Shopify + IA) queda cifrada en tu cookie, igual que en local.
+4. **Build Command**: Vercel usa el script `vercel-build` (`vite build`) automáticamente si existe en `package.json` — ya está configurado, no requiere ajuste manual.
+5. **Node.js Version**: Vercel respeta el campo `engines.node` de `package.json` (`>=22.13.0`, requerido por `iron-session`); confirma en Settings → General que la versión de Function Runtime sea 22.x o superior.
+6. Una vez desplegado, entra a tu URL de Vercel y conecta tu tienda normalmente (o usa el catálogo demo) — la sesión completa (Shopify + IA) queda cifrada en tu cookie, igual que en local.
 
 **Nota sobre "Historial de sesión" en Alt Text AI:** al ser una función serverless, el listado de imágenes escaneadas para Alt Text vive únicamente en tu navegador mientras la pestaña está abierta (no en una cookie ni en el servidor, por su tamaño) — si recargas la página a mitad de un escaneo sin haber aplicado los cambios a Shopify, se pierde el progreso no guardado y debes volver a escanear. Cualquier cambio que ya hayas aplicado con **Actualizar en Shopify** es permanente y no se ve afectado.

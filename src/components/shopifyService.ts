@@ -471,6 +471,390 @@ export function evaluateProductSEO(product: ShopifyProductSEO): SEOAuditEvaluati
   return { status, messages };
 }
 
+export interface ShopifyCatalogAuditProduct {
+  id: string;
+  numericId: string;
+  title: string;
+  handle: string;
+  vendor: string;
+  description: string;
+  minPrice: number;
+  maxPrice: number;
+}
+
+const CATALOG_AUDIT_PAGE_SIZE = 250;
+const CATALOG_AUDIT_MAX_PAGES = 40; // safety cap (~10,000 products) to avoid runaway scans
+
+/**
+ * Fetch every product in the store (title/handle/vendor/description/price
+ * range) by paging through Shopify's `products` connection. Used by the
+ * catalog Audit module — a read-only scan, mirrors `getAllProductsSEO`'s
+ * pagination but pulls the catalog fields that module checks instead of SEO
+ * fields.
+ */
+export async function getAllProductsCatalogAudit(
+  credentials: ShopifyCredentials
+): Promise<ShopifyCatalogAuditProduct[]> {
+  const products: ShopifyCatalogAuditProduct[] = [];
+  let cursor: string | null = null;
+  let page = 0;
+
+  const query = `
+    query getAllProductsCatalogAudit($first: Int!, $after: String) {
+      products(first: $first, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        edges {
+          node {
+            id
+            title
+            handle
+            vendor
+            description
+            priceRangeV2 {
+              minVariantPrice {
+                amount
+              }
+              maxVariantPrice {
+                amount
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  while (page < CATALOG_AUDIT_MAX_PAGES) {
+    page++;
+    const data = await executeGraphQL<{
+      products: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        edges: Array<{
+          node: {
+            id: string;
+            title: string;
+            handle: string;
+            vendor?: string;
+            description?: string;
+            priceRangeV2?: {
+              minVariantPrice?: { amount: string };
+              maxVariantPrice?: { amount: string };
+            };
+          };
+        }>;
+      };
+    }>(credentials, query, { first: CATALOG_AUDIT_PAGE_SIZE, after: cursor });
+
+    const edges = data?.products?.edges || [];
+    edges.forEach(({ node }) => {
+      products.push({
+        id: node.id,
+        numericId: extractNumericId(node.id),
+        title: node.title,
+        handle: node.handle || '',
+        vendor: node.vendor || '',
+        description: node.description || '',
+        minPrice: parseFloat(node.priceRangeV2?.minVariantPrice?.amount || '0') || 0,
+        maxPrice: parseFloat(node.priceRangeV2?.maxVariantPrice?.amount || '0') || 0,
+      });
+    });
+
+    const pageInfo = data?.products?.pageInfo;
+    if (!pageInfo?.hasNextPage) break;
+    cursor = pageInfo.endCursor;
+
+    // Small delay between pages to be polite to Shopify rate limits
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  return products;
+}
+
+/**
+ * Batch fetch multiple products by IDs for the catalog Audit's bulk-update
+ * preview — same chunked `nodes` approach as `getProductsByIds`, pulling
+ * vendor/description/price instead of SEO fields.
+ */
+export async function getCatalogAuditProductsByIds(
+  credentials: ShopifyCredentials,
+  ids: string[]
+): Promise<Map<string, ShopifyCatalogAuditProduct>> {
+  const resultMap = new Map<string, ShopifyCatalogAuditProduct>();
+  if (!ids.length) return resultMap;
+
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+    const slice = ids.slice(i, i + CHUNK_SIZE);
+    const gids = slice.map(formatProductGid);
+
+    const query = `
+      query getMultipleCatalogAuditProducts($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Product {
+            id
+            title
+            handle
+            vendor
+            description
+            priceRangeV2 {
+              minVariantPrice {
+                amount
+              }
+              maxVariantPrice {
+                amount
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await executeGraphQL<{
+      nodes: Array<{
+        id: string;
+        title: string;
+        handle: string;
+        vendor?: string;
+        description?: string;
+        priceRangeV2?: {
+          minVariantPrice?: { amount: string };
+          maxVariantPrice?: { amount: string };
+        };
+      } | null>;
+    }>(credentials, query, { ids: gids });
+
+    if (data?.nodes) {
+      data.nodes.forEach((node) => {
+        if (node && node.id) {
+          const numId = extractNumericId(node.id);
+          resultMap.set(numId, {
+            id: node.id,
+            numericId: numId,
+            title: node.title,
+            handle: node.handle || '',
+            vendor: node.vendor || '',
+            description: node.description || '',
+            minPrice: parseFloat(node.priceRangeV2?.minVariantPrice?.amount || '0') || 0,
+            maxPrice: parseFloat(node.priceRangeV2?.maxVariantPrice?.amount || '0') || 0,
+          });
+        }
+      });
+    }
+
+    if (i + CHUNK_SIZE < ids.length) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  return resultMap;
+}
+
+/**
+ * Updates a product's vendor, description and/or price from the catalog
+ * Audit's bulk-update flow. Unlike `updateProductSEO`, this DOES write
+ * catalog data (vendor/descriptionHtml via `productUpdate`, price via
+ * `productVariantsBulkUpdate` applied flat across every variant) — only
+ * triggered when the user explicitly uploads a file through "Actualización
+ * masiva" and confirms, never by the read-only scan itself.
+ */
+export async function updateProductCatalogFields(
+  credentials: ShopifyCredentials,
+  payload: {
+    numericId: string;
+    vendor?: string;
+    description?: string;
+    price?: number;
+  }
+): Promise<{
+  success: boolean;
+  updatedVendor?: string;
+  updatedDescription?: string;
+  updatedPrice?: number;
+  errorMessage?: string;
+}> {
+  const gid = formatProductGid(payload.numericId);
+  let updatedVendor: string | undefined;
+  let updatedDescription: string | undefined;
+  let updatedPrice: number | undefined;
+
+  const hasVendorOrDescription =
+    (payload.vendor !== undefined && payload.vendor !== null) ||
+    (payload.description !== undefined && payload.description !== null);
+
+  if (hasVendorOrDescription) {
+    const productInput: Record<string, any> = { id: gid };
+    if (payload.vendor !== undefined && payload.vendor !== null) {
+      productInput.vendor = payload.vendor;
+    }
+    if (payload.description !== undefined && payload.description !== null) {
+      productInput.descriptionHtml = payload.description;
+    }
+
+    const mutation = `
+      mutation updateProductCatalogFields($input: ProductInput!) {
+        productUpdate(input: $input) {
+          product {
+            id
+            vendor
+            description
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    try {
+      const data = await executeGraphQL<{
+        productUpdate: {
+          product: { id: string; vendor?: string; description?: string } | null;
+          userErrors: Array<{ field: string[]; message: string }>;
+        };
+      }>(credentials, mutation, { input: productInput });
+
+      const userErrors = data?.productUpdate?.userErrors || [];
+      if (userErrors.length > 0) {
+        return {
+          success: false,
+          errorMessage: `Shopify rechazó la actualización: ${userErrors.map((e) => e.message).join('. ')}`,
+        };
+      }
+      if (!data?.productUpdate?.product) {
+        return { success: false, errorMessage: 'Shopify no retornó el producto actualizado.' };
+      }
+      updatedVendor = data.productUpdate.product.vendor;
+      updatedDescription = data.productUpdate.product.description;
+    } catch (error: any) {
+      const safeError = (error.message || 'Error de conexión al actualizar marca/descripción.').replace(
+        credentials.accessToken,
+        '[REDACTED]'
+      );
+      return { success: false, errorMessage: safeError };
+    }
+  }
+
+  if (payload.price !== undefined && payload.price !== null) {
+    try {
+      const variantQuery = `
+        query getProductVariantIdsForPriceUpdate($id: ID!) {
+          product(id: $id) {
+            variants(first: 100) {
+              edges {
+                node {
+                  id
+                }
+              }
+            }
+          }
+        }
+      `;
+      const variantData = await executeGraphQL<{
+        product: { variants?: { edges: Array<{ node: { id: string } }> } } | null;
+      }>(credentials, variantQuery, { id: gid });
+
+      const variantIds = (variantData?.product?.variants?.edges || []).map((e) => e.node.id);
+      if (variantIds.length === 0) {
+        return { success: false, errorMessage: 'No se encontraron variantes del producto para actualizar el precio.' };
+      }
+
+      const priceStr = payload.price.toFixed(2);
+      const mutation = `
+        mutation bulkUpdateVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants {
+              id
+              price
+            }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
+      `;
+      const data = await executeGraphQL<{
+        productVariantsBulkUpdate: {
+          productVariants: Array<{ id: string; price: string }>;
+          userErrors: Array<{ field: string[]; message: string }>;
+        };
+      }>(credentials, mutation, {
+        productId: gid,
+        variants: variantIds.map((id) => ({ id, price: priceStr })),
+      });
+
+      const userErrors = data?.productVariantsBulkUpdate?.userErrors || [];
+      if (userErrors.length > 0) {
+        return {
+          success: false,
+          errorMessage: `Shopify rechazó la actualización de precio: ${userErrors.map((e) => e.message).join('. ')}`,
+        };
+      }
+      updatedPrice = payload.price;
+    } catch (error: any) {
+      const safeError = (error.message || 'Error de conexión al actualizar el precio.').replace(
+        credentials.accessToken,
+        '[REDACTED]'
+      );
+      return { success: false, errorMessage: safeError };
+    }
+  }
+
+  return { success: true, updatedVendor, updatedDescription, updatedPrice };
+}
+
+export interface CatalogAuditEvaluation {
+  issues: Array<'vendor' | 'price_zero' | 'price_placeholder' | 'description'>;
+  messages: string[];
+}
+
+export const CATALOG_AUDIT_PLACEHOLDER_PRICES = [999999, 9999999];
+
+/**
+ * Flags catalog data-quality issues the Audit module cares about: brand
+ * (vendor) left as the "BASE" default or blank, price left at $0 or one of
+ * the placeholder values ($999,999 / $9,999,999), and missing product
+ * description. The scan itself is read-only; fixing what it finds happens
+ * only through the "Actualización masiva" CSV/Excel upload
+ * (`updateProductCatalogFields` above), never automatically.
+ */
+export function evaluateCatalogAudit(product: ShopifyCatalogAuditProduct): CatalogAuditEvaluation {
+  const issues: CatalogAuditEvaluation['issues'] = [];
+  const messages: string[] = [];
+
+  const vendor = (product.vendor || '').trim();
+  if (!vendor) {
+    issues.push('vendor');
+    messages.push('Marca (vendor) vacía.');
+  } else if (vendor.toUpperCase() === 'BASE') {
+    issues.push('vendor');
+    messages.push('Marca (vendor) configurada como "BASE".');
+  }
+
+  if (product.minPrice === 0 || product.maxPrice === 0) {
+    issues.push('price_zero');
+    messages.push('Precio en $0.');
+  }
+  const placeholderPrice = CATALOG_AUDIT_PLACEHOLDER_PRICES.find(
+    (p) => product.minPrice === p || product.maxPrice === p
+  );
+  if (placeholderPrice !== undefined) {
+    issues.push('price_placeholder');
+    messages.push(`Precio en $${placeholderPrice.toLocaleString('es-MX')} (precio de referencia).`);
+  }
+
+  if (!(product.description || '').trim()) {
+    issues.push('description');
+    messages.push('Sin descripción.');
+  }
+
+  return { issues, messages };
+}
+
 /**
  * Check if a handle is already taken by a different product in Shopify
  */

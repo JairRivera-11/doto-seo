@@ -77,6 +77,7 @@ export interface AppSessionData {
   logs?: SessionLogEntry[];
   demoProductOverrides?: Record<string, Partial<ShopifyProductSEO>>;
   demoMediaOverrides?: Record<string, Partial<AltTextMediaRecordLike>>;
+  demoCatalogAuditOverrides?: Record<string, Partial<CatalogAuditProductLike>>;
   aiKeys?: {
     gemini?: string;
     claude?: string;
@@ -421,6 +422,156 @@ export function setDemoMediaOverride(
 ) {
   if (!session.demoMediaOverrides) session.demoMediaOverrides = {};
   session.demoMediaOverrides[id] = { ...session.demoMediaOverrides[id], ...patch };
+}
+
+// ==========================================
+// DEMO CATALOG AUDIT (fixed seed + small per-session overrides, same
+// merge-at-read pattern as DEMO_PRODUCTS_SEED above — edits come from the
+// Audit module's "Actualización masiva" CSV/Excel upload)
+// ==========================================
+
+export interface CatalogAuditProductLike {
+  id: string;
+  numericId: string;
+  title: string;
+  handle: string;
+  vendor: string;
+  description: string;
+  minPrice: number;
+  maxPrice: number;
+}
+
+export const DEMO_CATALOG_AUDIT_SEED: CatalogAuditProductLike[] = [
+  {
+    id: 'gid://shopify/Product/1234567890123',
+    numericId: '1234567890123',
+    title: 'Samsung Galaxy S25 Ultra 512GB',
+    handle: 'samsung-galaxy-s25-ultra-512gb',
+    vendor: 'Samsung',
+    description: 'Smartphone Samsung Galaxy S25 Ultra con cámara de 200MP y procesador Snapdragon 8 Elite.',
+    minPrice: 32999,
+    maxPrice: 32999,
+  },
+  {
+    id: 'gid://shopify/Product/9876543210987',
+    numericId: '9876543210987',
+    title: 'Apple iPhone 16 Pro Max 256GB Titanio Natural',
+    handle: 'apple-iphone-16-pro-max-256gb-titanio-natural',
+    vendor: 'Apple',
+    description: 'Apple iPhone 16 Pro Max con chip A18 Pro, botón de Control de Cámara y acabado en titanio natural.',
+    minPrice: 34999,
+    maxPrice: 34999,
+  },
+  {
+    id: 'gid://shopify/Product/4567890123456',
+    numericId: '4567890123456',
+    title: 'Sony WH-1000XM5 Audífonos Inalámbricos Noise Cancelling',
+    handle: 'sony-wh-1000xm5-audifonos-inalambricos',
+    vendor: 'Sony',
+    description: 'Audífonos over-ear Sony WH-1000XM5 con cancelación de ruido activa inteligente y audio Hi-Res.',
+    minPrice: 8499,
+    maxPrice: 8499,
+  },
+  {
+    id: 'gid://shopify/Product/7890123456789',
+    numericId: '7890123456789',
+    title: 'Xiaomi 14 Ultra 512GB Blanco Fotografía Leica',
+    handle: 'xiaomi-14-ultra-512gb-blanco-leica',
+    vendor: 'Xiaomi',
+    description: 'Smartphone de alta gama Xiaomi 14 Ultra con sensor de una pulgada y óptica cuádruple Leica.',
+    minPrice: 27999,
+    maxPrice: 27999,
+  },
+  {
+    id: 'gid://shopify/Product/3344556677889',
+    numericId: '3344556677889',
+    title: 'Nintendo Switch OLED Modelo Blanco',
+    handle: 'nintendo-switch-oled-blanco',
+    vendor: 'Nintendo',
+    description: 'Consola híbrida Nintendo Switch OLED con pantalla de 7 pulgadas y base con puerto LAN.',
+    minPrice: 7999,
+    maxPrice: 7999,
+  },
+  // Deliberate audit issues below, so the demo catalog is actually useful to try.
+  {
+    id: 'gid://shopify/Product/1112223334445',
+    numericId: '1112223334445',
+    title: 'Cargador USB-C 20W Genérico',
+    handle: 'cargador-usb-c-20w-generico',
+    vendor: 'BASE',
+    description: 'Cargador rápido USB-C de 20W compatible con múltiples dispositivos.',
+    minPrice: 299,
+    maxPrice: 299,
+  },
+  {
+    id: 'gid://shopify/Product/2223334445556',
+    numericId: '2223334445556',
+    title: 'Funda Silicón Transparente Universal',
+    handle: 'funda-silicon-transparente-universal',
+    vendor: '',
+    description: 'Funda protectora de silicón transparente resistente a caídas.',
+    minPrice: 149,
+    maxPrice: 199,
+  },
+  {
+    id: 'gid://shopify/Product/3334445556667',
+    numericId: '3334445556667',
+    title: 'Mica de Cristal Templado 9H',
+    handle: 'mica-cristal-templado-9h',
+    vendor: 'Doto Accesorios',
+    description: '',
+    minPrice: 99,
+    maxPrice: 99,
+  },
+  {
+    id: 'gid://shopify/Product/4445556667778',
+    numericId: '4445556667778',
+    title: 'Producto Recién Cargado Sin Precio Asignado',
+    handle: 'producto-recien-cargado-sin-precio',
+    vendor: 'Doto Accesorios',
+    description:
+      'Producto recién dado de alta por el equipo de compras, pendiente de fijar el precio final antes de publicarse.',
+    minPrice: 0,
+    maxPrice: 0,
+  },
+  {
+    id: 'gid://shopify/Product/5556667778889',
+    numericId: '5556667778889',
+    title: 'Cable HDMI 2.1 8K Precio Referencia',
+    handle: 'cable-hdmi-2-1-8k-precio-referencia',
+    vendor: 'Doto Accesorios',
+    description:
+      'Cable HDMI 2.1 de alta velocidad, cargado con precio de referencia mientras se confirma el costo real con el proveedor.',
+    minPrice: 999999,
+    maxPrice: 999999,
+  },
+  {
+    id: 'gid://shopify/Product/6667778889990',
+    numericId: '6667778889990',
+    title: 'Bocina Bluetooth Portátil Precio Referencia',
+    handle: 'bocina-bluetooth-portatil-precio-referencia',
+    vendor: 'Doto Accesorios',
+    description:
+      'Bocina Bluetooth portátil resistente al agua, cargada con precio de referencia mientras se confirma el costo real con el proveedor.',
+    minPrice: 9999999,
+    maxPrice: 9999999,
+  },
+];
+
+/** Merged view (seed + this session's edits) - use for reads/scans/preview. */
+export function getDemoCatalogAudit(session: IronSession<AppSessionData>): CatalogAuditProductLike[] {
+  const overrides = session.demoCatalogAuditOverrides || {};
+  return DEMO_CATALOG_AUDIT_SEED.map((p) => ({ ...p, ...(overrides[p.numericId] || {}) }));
+}
+
+/** Persist an edit to one demo catalog product as a small override (not a full-catalog copy). */
+export function setDemoCatalogAuditOverride(
+  session: IronSession<AppSessionData>,
+  id: string,
+  patch: Partial<CatalogAuditProductLike>
+) {
+  if (!session.demoCatalogAuditOverrides) session.demoCatalogAuditOverrides = {};
+  session.demoCatalogAuditOverrides[id] = { ...session.demoCatalogAuditOverrides[id], ...patch };
 }
 
 export function recalculateAltTextStats(list: AltTextMediaRecordLike[]) {

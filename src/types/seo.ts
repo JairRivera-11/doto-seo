@@ -91,7 +91,71 @@ export interface SessionLog {
   message: string;
 }
 
-export type ActiveTab = 'dashboard' | 'seo' | 'alt_text' | 'templates' | 'logs' | 'ai_settings';
+export type ActiveTab = 'dashboard' | 'seo' | 'audit' | 'alt_text' | 'templates' | 'logs' | 'ai_settings';
+
+export type CatalogAuditIssueType = 'vendor' | 'price_zero' | 'price_placeholder' | 'description';
+
+export interface CatalogAuditRow {
+  id: string;
+  numericId: string;
+  title: string;
+  handle: string;
+  vendor: string;
+  description: string;
+  minPrice: number;
+  maxPrice: number;
+  issues: CatalogAuditIssueType[];
+  messages: string[];
+}
+
+export interface CatalogAuditSummary {
+  total: number;
+  ok: number;
+  withIssues: number;
+  vendorIssues: number;
+  priceIssues: number;
+  descriptionIssues: number;
+}
+
+export interface CatalogBulkPreviewRow {
+  rowNumber: number;
+  productId: string;
+  productTitle: string;
+  currentVendor: string;
+  newVendor: string;
+  currentMinPrice: number | null;
+  currentMaxPrice: number | null;
+  newPrice: number | null;
+  currentDescription: string;
+  newDescription: string;
+  status: 'valid' | 'warning' | 'error' | 'no_change';
+  messages: string[];
+  fieldsToUpdate: string[];
+}
+
+export interface CatalogBulkPreviewSummary {
+  totalRows: number;
+  valid: number;
+  warnings: number;
+  errors: number;
+  noChange: number;
+  toUpdate: number;
+}
+
+export interface CatalogBulkExecutionResult {
+  productId: string;
+  productTitle: string;
+  status: 'success' | 'error' | 'skipped';
+  previousVendor: string;
+  newVendor: string;
+  previousPrice: number | null;
+  newPrice: number | null;
+  previousDescription: string;
+  newDescription: string;
+  updatedFields: string[];
+  errorMessage?: string;
+  processedAt: string;
+}
 
 export type VisionProviderType = 'local' | 'gemini' | 'claude' | 'qwen2vl' | 'openai' | 'deepseek';
 

@@ -6,6 +6,7 @@ import { Sidebar } from './components/Sidebar';
 import { ConnectView } from './components/ConnectView';
 import { DashboardView } from './components/DashboardView';
 import { SEOView } from './components/SEOView';
+import { AuditView } from './components/AuditView';
 import { TemplatesView } from './components/TemplatesView';
 import { SessionLogsView } from './components/SessionLogsView';
 import { AltTextView } from './components/AltTextView';
@@ -112,6 +113,9 @@ export default function App() {
             )}
             {activeTab === 'seo' && (
               <SEOView shop={shop} onNavigateLogs={() => setActiveTab('logs')} onExecutionCompleted={refreshStats} />
+            )}
+            {activeTab === 'audit' && (
+              <AuditView shop={shop} onNavigateLogs={() => setActiveTab('logs')} onExecutionCompleted={refreshStats} />
             )}
             {activeTab === 'alt_text' && (
               <AltTextView

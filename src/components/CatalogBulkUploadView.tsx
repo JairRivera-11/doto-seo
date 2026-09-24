@@ -1,7 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { PreviewRow, PreviewSummary, ExecutionResult, ShopConnectionInfo, ActiveTab } from '../types/seo';
-import { parseUploadFile, downloadExecutionReport, downloadCSVTemplate, downloadExcelTemplate } from '../utils/fileParser';
-import { previewBulkRows, executeBulkUpdate } from '../services/api';
+import React, { useRef, useState } from 'react';
+import { CatalogBulkPreviewRow, CatalogBulkPreviewSummary, CatalogBulkExecutionResult, ActiveTab } from '../types/seo';
+import {
+  parseCatalogAuditUploadFile,
+  downloadCatalogAuditCSVTemplate,
+  downloadCatalogAuditExcelTemplate,
+} from '../utils/fileParser';
+import { previewCatalogAuditBulk, executeCatalogAuditBulk } from '../services/api';
 import {
   UploadCloud,
   FileSpreadsheet,
@@ -12,23 +16,23 @@ import {
   ArrowRight,
   Download,
   RotateCcw,
-  Sparkles,
   Info,
   Check,
   Filter,
   Activity,
 } from 'lucide-react';
 
-interface BulkUploadViewProps {
-  shop: ShopConnectionInfo;
+interface CatalogBulkUploadViewProps {
   onExecutionCompleted?: () => void;
   onNavigate?: (tab: ActiveTab) => void;
-  // Pre-selected rows coming from the SEO Audit tab (bypasses the file dropzone
-  // and opens straight into an editable preview instead of a CSV/Excel upload).
-  initialRows?: Array<{ productId: string; handle: string; seoTitle: string; seoDescription: string }>;
 }
 
-export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutionCompleted, onNavigate, initialRows }) => {
+const fieldLabel = (f: string) => (f === 'vendor' ? 'Marca' : f === 'price' ? 'Precio' : 'Descripción');
+
+const formatMoney = (n: number | null) =>
+  n === null ? '—' : `$${n.toLocaleString('es-MX', { minimumFractionDigits: 2 })}`;
+
+export const CatalogBulkUploadView: React.FC<CatalogBulkUploadViewProps> = ({ onExecutionCompleted, onNavigate }) => {
   // File state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState(false);
@@ -36,15 +40,15 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
   const [executionError, setExecutionError] = useState<string | null>(null);
   const [detectedColumns, setDetectedColumns] = useState<{
     productIdCol?: string;
-    handleCol?: string;
-    seoTitleCol?: string;
-    seoDescCol?: string;
+    vendorCol?: string;
+    priceCol?: string;
+    descriptionCol?: string;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Preview state
-  const [previewSummary, setPreviewSummary] = useState<PreviewSummary | null>(null);
-  const [previewRows, setPreviewRows] = useState<PreviewRow[]>([]);
+  const [previewSummary, setPreviewSummary] = useState<CatalogBulkPreviewSummary | null>(null);
+  const [previewRows, setPreviewRows] = useState<CatalogBulkPreviewRow[]>([]);
   const [filterTab, setFilterTab] = useState<'all' | 'toUpdate' | 'warnings' | 'errors' | 'noChange'>('all');
 
   // Execution state
@@ -57,17 +61,8 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
     errors: number;
     skipped: number;
   } | null>(null);
-  const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
+  const [executionResults, setExecutionResults] = useState<CatalogBulkExecutionResult[]>([]);
 
-  // Editable bulk-edit mode, entered when arriving from the SEO Audit tab's
-  // "Editar en tabla" action instead of a CSV/Excel upload.
-  const [isEditableMode, setIsEditableMode] = useState(false);
-  const [editableValues, setEditableValues] = useState<
-    Record<string, { handle: string; seoTitle: string; seoDescription: string }>
-  >({});
-  const [isRevalidating, setIsRevalidating] = useState(false);
-
-  // Drag & drop handlers
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
   };
@@ -97,16 +92,14 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
     setIsParsing(true);
 
     try {
-      // 1. Parse CSV/Excel into structured rows
-      const { rows, columnMapping } = await parseUploadFile(file);
+      const { rows, columnMapping } = await parseCatalogAuditUploadFile(file);
       setDetectedColumns(columnMapping);
 
       if (rows.length === 0) {
         throw new Error('No se detectaron registros válidos en el archivo.');
       }
 
-      // 2. Fetch current store state and compute validation diff
-      const previewData = await previewBulkRows(rows);
+      const previewData = await previewCatalogAuditBulk(rows);
       setPreviewSummary(previewData.summary);
       setPreviewRows(previewData.previewRows);
     } catch (err: any) {
@@ -116,7 +109,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
     }
   };
 
-  // Reset entire workflow
   const handleReset = () => {
     setSelectedFile(null);
     setParseError(null);
@@ -126,89 +118,9 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
     setPreviewRows([]);
     setExecutionSummary(null);
     setExecutionResults([]);
-    setIsEditableMode(false);
-    setEditableValues({});
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Build an initial preview straight from rows selected in the SEO Audit tab
-  // (no file involved) — reuses the same server-side previewBulkRows validation.
-  const runAuditPreview = async (rows: Array<{ productId: string; handle: string; seoTitle: string; seoDescription: string }>) => {
-    setIsEditableMode(true);
-    setParseError(null);
-    setExecutionError(null);
-    setPreviewSummary(null);
-    setPreviewRows([]);
-    setExecutionSummary(null);
-    setExecutionResults([]);
-    setIsParsing(true);
-
-    const initialEditable: Record<string, { handle: string; seoTitle: string; seoDescription: string }> = {};
-    rows.forEach((r) => {
-      initialEditable[r.productId] = { handle: r.handle, seoTitle: r.seoTitle, seoDescription: r.seoDescription };
-    });
-    setEditableValues(initialEditable);
-
-    try {
-      const requestRows = rows.map((r, index) => ({
-        rowNumber: index + 1,
-        productId: r.productId,
-        handle: r.handle,
-        seoTitle: r.seoTitle,
-        seoDescription: r.seoDescription,
-      }));
-      const previewData = await previewBulkRows(requestRows);
-      setPreviewSummary(previewData.summary);
-      setPreviewRows(previewData.previewRows);
-    } catch (err: any) {
-      setParseError(err.message || 'Error al preparar la edición en lote desde la Auditoría.');
-    } finally {
-      setIsParsing(false);
-    }
-  };
-
-  useEffect(() => {
-    if (initialRows && initialRows.length > 0) {
-      runAuditPreview(initialRows);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialRows]);
-
-  const updateEditableField = (
-    productId: string,
-    field: 'handle' | 'seoTitle' | 'seoDescription',
-    value: string
-  ) => {
-    setEditableValues((prev) => {
-      const current = prev[productId] || { handle: '', seoTitle: '', seoDescription: '' };
-      return { ...prev, [productId]: { ...current, [field]: value } };
-    });
-  };
-
-  // Re-run server-side validation (format, length, handle-collision-in-file)
-  // against the values the user just edited in the preview table.
-  const handleRevalidate = async () => {
-    setIsRevalidating(true);
-    setParseError(null);
-    try {
-      const requestRows = previewRows.map((r) => ({
-        rowNumber: r.rowNumber,
-        productId: r.productId,
-        handle: editableValues[r.productId]?.handle ?? r.newHandle,
-        seoTitle: editableValues[r.productId]?.seoTitle ?? r.newSeoTitle,
-        seoDescription: editableValues[r.productId]?.seoDescription ?? r.newSeoDescription,
-      }));
-      const previewData = await previewBulkRows(requestRows);
-      setPreviewSummary(previewData.summary);
-      setPreviewRows(previewData.previewRows);
-    } catch (err: any) {
-      setParseError(err.message || 'Error al revalidar los cambios.');
-    } finally {
-      setIsRevalidating(false);
-    }
-  };
-
-  // Run execution
   const handleExecute = async () => {
     setShowConfirmModal(false);
     setIsExecuting(true);
@@ -216,18 +128,18 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
     setProgressCount(0);
 
     try {
-      // Filter rows that actually need updates
       const itemsToUpdate = previewRows
         .filter((r) => r.status === 'valid' || r.status === 'warning')
         .map((r) => ({
           productId: r.productId,
           productTitle: r.productTitle,
-          currentHandle: r.currentHandle,
-          newHandle: r.newHandle,
-          currentSeoTitle: r.currentSeoTitle,
-          newSeoTitle: r.newSeoTitle,
-          currentSeoDescription: r.currentSeoDescription,
-          newSeoDescription: r.newSeoDescription,
+          currentVendor: r.currentVendor,
+          newVendor: r.newVendor,
+          currentMinPrice: r.currentMinPrice,
+          currentMaxPrice: r.currentMaxPrice,
+          newPrice: r.newPrice,
+          currentDescription: r.currentDescription,
+          newDescription: r.newDescription,
           fieldsToUpdate: r.fieldsToUpdate,
         }));
 
@@ -235,11 +147,12 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
         throw new Error('No hay productos con cambios válidos para actualizar.');
       }
 
-      // Progress animation simulation during batch network processing. Must
-      // never reach/overshoot the real total: for large batches the step
-      // size (ceil(total/10)) can jump past `total - 1` in one tick, which
-      // used to freeze the bar showing e.g. "520 / 515" (101%) for however
-      // long the real request kept running in the background.
+      // Fake progress animation while the real request is in flight — the
+      // server doesn't stream real progress, so this just fills the bar in
+      // ~10 steps. It must never reach/overshoot the real total: for large
+      // batches the step size (ceil(total/10)) can jump past `total - 1` in
+      // one tick, which used to freeze the bar showing e.g. "520 / 515"
+      // (101%) for however long the real request kept running.
       const interval = setInterval(() => {
         setProgressCount((prev) => {
           const next = prev + Math.ceil(itemsToUpdate.length / 10);
@@ -251,7 +164,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
         });
       }, 300);
 
-      const res = await executeBulkUpdate(itemsToUpdate);
+      const res = await executeCatalogAuditBulk(itemsToUpdate);
       clearInterval(interval);
       setProgressCount(itemsToUpdate.length);
 
@@ -268,7 +181,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
     }
   };
 
-  // Filtered rows for the preview table
   const displayedPreviewRows = previewRows.filter((r) => {
     if (filterTab === 'all') return true;
     if (filterTab === 'toUpdate') return r.status === 'valid' || r.status === 'warning';
@@ -280,22 +192,19 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
 
   return (
     <div className="space-y-6">
-      {/* Title */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold tracking-tight text-slate-900">
-            Actualización masiva
-          </h1>
+          <h1 className="text-xl font-bold tracking-tight text-slate-900">Actualización masiva de catálogo</h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Importa un archivo CSV o Excel (.xlsx, .xls) para auditar y actualizar de forma masiva Handle, SEO Title y Meta Description.
+            Importa un archivo CSV o Excel (.xlsx, .xls) para corregir en lote Marca, Precio y/o Descripción,
+            dependiendo de lo que cada producto necesite.
           </p>
         </div>
 
-        {/* Quick template download buttons */}
         <div className="flex items-center space-x-2">
           <button
             type="button"
-            onClick={downloadCSVTemplate}
+            onClick={downloadCatalogAuditCSVTemplate}
             className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 rounded-xl transition-colors flex items-center space-x-1.5 cursor-pointer shadow-2xs"
           >
             <Download className="w-3.5 h-3.5 text-[#6012C3]" />
@@ -303,13 +212,22 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
           </button>
           <button
             type="button"
-            onClick={downloadExcelTemplate}
+            onClick={downloadCatalogAuditExcelTemplate}
             className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-xs font-medium text-slate-700 rounded-xl transition-colors flex items-center space-x-1.5 cursor-pointer shadow-2xs"
           >
             <Download className="w-3.5 h-3.5 text-emerald-600" />
             <span>Plantilla Excel (.xlsx)</span>
           </button>
         </div>
+      </div>
+
+      {/* Explicit scope warning: unlike the SEO module, this DOES write catalog data */}
+      <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start space-x-2">
+        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+        <span>
+          A diferencia del módulo de SEO, esta sección <strong>sí modifica datos reales del catálogo</strong> (Marca,
+          Precio y Descripción). Revisa siempre la vista previa antes de confirmar.
+        </span>
       </div>
 
       {/* Step workflow indicator */}
@@ -324,22 +242,14 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
           >
             <div
               className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                !previewSummary && !executionSummary
-                  ? 'bg-[#6012C3] text-white'
-                  : 'bg-emerald-600 text-white'
+                !previewSummary && !executionSummary ? 'bg-[#6012C3] text-white' : 'bg-emerald-600 text-white'
               }`}
             >
               {!previewSummary && !executionSummary ? '1' : '✓'}
             </div>
             <div>
-              <p className="font-bold leading-tight">Paso 1: {isEditableMode ? 'Origen' : 'Archivo'}</p>
-              <p className="text-[11px] opacity-80">
-                {isEditableMode
-                  ? 'Productos seleccionados en Auditoría'
-                  : !selectedFile
-                  ? 'Selecciona CSV o Excel'
-                  : selectedFile.name}
-              </p>
+              <p className="font-bold leading-tight">Paso 1: Archivo</p>
+              <p className="text-[11px] opacity-80">{!selectedFile ? 'Selecciona CSV o Excel' : selectedFile.name}</p>
             </div>
           </div>
 
@@ -366,9 +276,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             <div>
               <p className="font-bold leading-tight">Paso 2: Vista previa</p>
               <p className="text-[11px] opacity-80">
-                {previewSummary
-                  ? `${previewSummary.toUpdate} cambios detectados`
-                  : 'Validación y auditoría'}
+                {previewSummary ? `${previewSummary.toUpdate} cambios detectados` : 'Validación y semáforo'}
               </p>
             </div>
           </div>
@@ -408,7 +316,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
       </div>
 
       {/* Upload Dropzone */}
-      {!isEditableMode && !previewSummary && !isExecuting && !executionSummary && (
+      {!previewSummary && !isExecuting && !executionSummary && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
           <div
             onDragOver={handleDragOver}
@@ -426,21 +334,18 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             <div className="w-16 h-16 rounded-2xl bg-[#6012C3]/10 text-[#6012C3] flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
               <UploadCloud className="w-8 h-8" />
             </div>
-            <h3 className="text-base font-bold text-slate-800">
-              Haz clic o arrastra tu archivo aquí
-            </h3>
+            <h3 className="text-base font-bold text-slate-800">Haz clic o arrastra tu archivo aquí</h3>
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
               Formatos soportados: <span className="font-semibold text-slate-700">.csv, .xlsx, .xls</span>
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11px] text-slate-400">
               <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Product ID (Obligatorio)</span>
-              <span className="bg-white px-2 py-1 rounded-md border border-slate-200">URL Handle</span>
-              <span className="bg-white px-2 py-1 rounded-md border border-slate-200">SEO Title</span>
-              <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Meta Description</span>
+              <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Marca</span>
+              <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Precio</span>
+              <span className="bg-white px-2 py-1 rounded-md border border-slate-200">Descripción</span>
             </div>
           </div>
 
-          {/* Parsing spinner */}
           {isParsing && (
             <div className="p-4 rounded-xl bg-purple-50 border border-purple-200 text-purple-900 text-xs flex items-center space-x-3">
               <div className="w-4 h-4 border-2 border-purple-600 border-t-transparent rounded-full animate-spin shrink-0" />
@@ -448,7 +353,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             </div>
           )}
 
-          {/* Parse error */}
           {parseError && (
             <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-start space-x-2">
               <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -459,7 +363,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             </div>
           )}
 
-          {/* Helper instructions card */}
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80 text-xs text-slate-600 space-y-2">
             <div className="flex items-center space-x-1.5 font-semibold text-slate-800">
               <Info className="w-4 h-4 text-[#6012C3]" />
@@ -467,86 +370,46 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             </div>
             <ul className="list-disc list-inside space-y-1 text-slate-500 pl-1 text-[11px]">
               <li>
-                <strong>Celdas vacías:</strong> Si dejas una celda en blanco en el archivo, ese campo <strong>NO se modificará</strong> en Shopify.
+                <strong>Celdas vacías:</strong> Si dejas una celda en blanco en el archivo, ese campo{' '}
+                <strong>NO se modificará</strong> en Shopify — solo se actualiza lo que necesites corregir.
               </li>
               <li>
-                <strong>Modo Solo Cambios:</strong> Si el valor propuesto es exactamente igual al actual en Shopify, se clasifica como <em>"Sin cambios"</em> y no consume operaciones innecesarias.
+                <strong>Modo Solo Cambios:</strong> Si el valor propuesto es exactamente igual al actual en Shopify,
+                se clasifica como <em>"Sin cambios"</em> y no consume operaciones innecesarias.
               </li>
               <li>
-                <strong>Validación de Handles:</strong> Se comprueba que el nuevo handle no esté asignado a otro producto en la tienda para prevenir colisiones de URL.
+                <strong>Precio por variante:</strong> Si un producto tiene varias variantes con precios distintos, el
+                nuevo precio se aplica por igual a todas ellas.
               </li>
             </ul>
           </div>
         </div>
       )}
 
-      {/* Loading / error state while preparing an audit-driven bulk edit */}
-      {isEditableMode && !previewSummary && !isExecuting && !executionSummary && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
-          {isParsing && (
-            <div className="p-4 rounded-xl bg-purple-50 border border-purple-200 text-purple-900 text-xs flex items-center space-x-3">
-              <div className="w-4 h-4 border-2 border-purple-600 border-t-transparent rounded-full animate-spin shrink-0" />
-              <span>Preparando edición en lote a partir de la Auditoría...</span>
-            </div>
-          )}
-          {parseError && (
-            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-start space-x-2">
-              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-semibold">Error al preparar la edición en lote</p>
-                <p className="text-rose-700 mt-0.5">{parseError}</p>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Preview Section */}
       {previewSummary && !executionSummary && !isExecuting && (
         <div className="space-y-6">
-          {/* Summary Box */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-slate-100">
               <div>
                 <div className="flex items-center space-x-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">
                   <FileSpreadsheet className="w-4 h-4 text-[#6012C3]" />
-                  <span>
-                    {isEditableMode ? 'Origen: Auditoría SEO (edición en lote)' : `Archivo cargado: ${selectedFile?.name}`}
-                  </span>
+                  <span>Archivo cargado: {selectedFile?.name}</span>
                 </div>
-                <h2 className="text-lg font-bold text-slate-900 mt-0.5">
-                  Resumen de Validación Previa
-                </h2>
+                <h2 className="text-lg font-bold text-slate-900 mt-0.5">Resumen de Validación Previa</h2>
               </div>
 
               <div className="flex items-center space-x-2">
-                {isEditableMode && (
-                  <button
-                    type="button"
-                    onClick={handleRevalidate}
-                    disabled={isRevalidating}
-                    className="px-3.5 py-2 text-xs font-semibold text-[#6012C3] hover:text-[#4b0d9c] bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-colors flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
-                  >
-                    {isRevalidating ? (
-                      <div className="w-3.5 h-3.5 border-2 border-purple-600 border-t-transparent rounded-full animate-spin shrink-0" />
-                    ) : (
-                      <Sparkles className="w-3.5 h-3.5" />
-                    )}
-                    <span>Revalidar cambios</span>
-                  </button>
-                )}
-
                 <button
                   type="button"
                   onClick={handleReset}
                   className="px-3.5 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors flex items-center space-x-1.5 cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  <span>{isEditableMode ? 'Cancelar edición en lote' : 'Cambiar archivo'}</span>
+                  <span>Cambiar archivo</span>
                 </button>
 
                 <button
-                  id="btn-confirm-bulk-trigger"
                   type="button"
                   onClick={() => setShowConfirmModal(true)}
                   disabled={previewSummary.toUpdate === 0}
@@ -558,21 +421,16 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
               </div>
             </div>
 
-            {/* Execution Error Banner if any */}
             {executionError && (
               <div className="p-4 rounded-xl bg-rose-50 border-2 border-rose-300 text-rose-900 text-xs flex items-start space-x-3 shadow-2xs">
                 <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
                 <div>
                   <p className="font-bold text-sm">Error durante la ejecución en Shopify</p>
                   <p className="text-rose-800 mt-1 leading-relaxed">{executionError}</p>
-                  <p className="text-[11px] text-rose-600 mt-2">
-                    Verifica la conexión con Shopify o consulta el detalle en la pestaña de Historial de Sesión.
-                  </p>
                 </div>
               </div>
             )}
 
-            {/* Action Required Banner: Explicit warning that changes are NOT yet applied */}
             {previewSummary.toUpdate > 0 ? (
               <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
                 <div className="flex items-start space-x-3">
@@ -583,8 +441,8 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                     </h4>
                     <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
                       Se validaron <strong>{previewSummary.totalRows} filas</strong> del archivo y se encontraron{' '}
-                      <strong>{previewSummary.toUpdate} productos con cambios listos</strong>. Para guardar
-                      estos valores directamente en tu tienda Shopify, debes hacer clic en el botón de confirmación.
+                      <strong>{previewSummary.toUpdate} productos con cambios listos</strong>. Para guardar estos
+                      valores directamente en tu tienda Shopify, debes hacer clic en el botón de confirmación.
                     </p>
                   </div>
                 </div>
@@ -601,9 +459,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
               <div className="p-4 bg-slate-100 border border-slate-300 rounded-2xl flex items-start space-x-3 text-xs text-slate-700 shadow-xs">
                 <Info className="w-5 h-5 text-slate-500 shrink-0 mt-0.5" />
                 <div>
-                  <h4 className="font-bold text-slate-900 uppercase tracking-wide">
-                    0 productos por actualizar
-                  </h4>
+                  <h4 className="font-bold text-slate-900 uppercase tracking-wide">0 productos por actualizar</h4>
                   <p className="mt-1 text-slate-600 leading-relaxed">
                     No se detectaron campos con valores diferentes a los existentes en Shopify.
                     {previewSummary.noChange > 0 &&
@@ -623,7 +479,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
               </div>
             )}
 
-            {/* Detected Columns Badges */}
             {detectedColumns && (
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-slate-500 text-[11px] uppercase tracking-wider mr-1">
@@ -631,54 +486,35 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                 </span>
                 <span className="inline-flex items-center space-x-1 text-slate-700 bg-white px-2 py-0.5 rounded-md border border-slate-200">
                   <Check className="w-3 h-3 text-emerald-600" />
-                  <span>ID: <strong>{detectedColumns.productIdCol}</strong></span>
+                  <span>
+                    ID: <strong>{detectedColumns.productIdCol}</strong>
+                  </span>
                 </span>
-                <span
-                  className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-md border ${
-                    detectedColumns.handleCol
-                      ? 'text-slate-700 bg-white border-slate-200'
-                      : 'text-slate-400 bg-slate-100 border-slate-200'
-                  }`}
-                >
-                  {detectedColumns.handleCol ? (
-                    <Check className="w-3 h-3 text-emerald-600" />
-                  ) : (
-                    <span className="text-[10px]">⚪</span>
-                  )}
-                  <span>Handle: <strong>{detectedColumns.handleCol || 'Omitido'}</strong></span>
-                </span>
-                <span
-                  className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-md border ${
-                    detectedColumns.seoTitleCol
-                      ? 'text-slate-700 bg-white border-slate-200'
-                      : 'text-slate-400 bg-slate-100 border-slate-200'
-                  }`}
-                >
-                  {detectedColumns.seoTitleCol ? (
-                    <Check className="w-3 h-3 text-emerald-600" />
-                  ) : (
-                    <span className="text-[10px]">⚪</span>
-                  )}
-                  <span>SEO Title: <strong>{detectedColumns.seoTitleCol || 'Omitido'}</strong></span>
-                </span>
-                <span
-                  className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-md border ${
-                    detectedColumns.seoDescCol
-                      ? 'text-slate-700 bg-white border-slate-200'
-                      : 'text-slate-400 bg-slate-100 border-slate-200'
-                  }`}
-                >
-                  {detectedColumns.seoDescCol ? (
-                    <Check className="w-3 h-3 text-emerald-600" />
-                  ) : (
-                    <span className="text-[10px]">⚪</span>
-                  )}
-                  <span>Meta Desc: <strong>{detectedColumns.seoDescCol || 'Omitido'}</strong></span>
-                </span>
+                {(
+                  [
+                    { key: 'vendorCol', label: 'Marca' },
+                    { key: 'priceCol', label: 'Precio' },
+                    { key: 'descriptionCol', label: 'Descripción' },
+                  ] as const
+                ).map(({ key, label }) => (
+                  <span
+                    key={key}
+                    className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-md border ${
+                      detectedColumns[key]
+                        ? 'text-slate-700 bg-white border-slate-200'
+                        : 'text-slate-400 bg-slate-100 border-slate-200'
+                    }`}
+                  >
+                    {detectedColumns[key] ? <Check className="w-3 h-3 text-emerald-600" /> : <span className="text-[10px]">⚪</span>}
+                    <span>
+                      {label}: <strong>{detectedColumns[key] || 'Omitido'}</strong>
+                    </span>
+                  </span>
+                ))}
               </div>
             )}
 
-            {/* Metric counters */}
+            {/* Metric counters (semáforo) */}
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
               <div className="p-3 bg-purple-50 border border-purple-100 rounded-xl">
                 <span className="text-[11px] font-medium text-purple-700 block">Productos a actualizar</span>
@@ -702,7 +538,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
               </div>
             </div>
 
-            {/* Filter buttons */}
+            {/* Filter buttons (semáforo) */}
             <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
               <span className="text-xs font-semibold text-slate-400 mr-2 flex items-center space-x-1">
                 <Filter className="w-3 h-3" />
@@ -720,9 +556,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                   type="button"
                   onClick={() => setFilterTab(tab.id as any)}
                   className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                    filterTab === tab.id
-                      ? 'bg-[#6012C3] text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    filterTab === tab.id ? 'bg-[#6012C3] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   {tab.label}
@@ -766,7 +600,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                             isError ? 'bg-rose-50/30' : isWarning ? 'bg-amber-50/20' : ''
                           }`}
                         >
-                          {/* Estado badge */}
                           <td className="py-3 px-3.5 text-center">
                             {isValid && (
                               <span title="Listo para actualizar" className="inline-flex text-emerald-600 font-bold">
@@ -790,7 +623,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                             )}
                           </td>
 
-                          {/* Product ID */}
                           <td className="py-3 px-3.5 font-mono text-slate-900 font-semibold">
                             {row.productId}
                             {row.messages.length > 0 && (
@@ -809,12 +641,8 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                             )}
                           </td>
 
-                          {/* Product Title */}
-                          <td className="py-3 px-3.5 font-medium text-slate-900">
-                            {row.productTitle}
-                          </td>
+                          <td className="py-3 px-3.5 font-medium text-slate-900">{row.productTitle}</td>
 
-                          {/* Campos modificados */}
                           <td className="py-3 px-3.5">
                             {row.fieldsToUpdate.length === 0 ? (
                               <span className="text-slate-400 italic">Sin cambios</span>
@@ -825,98 +653,58 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                                     key={f}
                                     className="px-1.5 py-0.5 rounded bg-purple-50 text-[#6012C3] font-mono text-[10px] font-semibold border border-purple-200/60"
                                   >
-                                    {f === 'handle' ? 'Handle' : f === 'seoTitle' ? 'SEO Title' : 'Meta Description'}
+                                    {fieldLabel(f)}
                                   </span>
                                 ))}
                               </div>
                             )}
                           </td>
 
-                          {/* Valor actual */}
                           <td className="py-3 px-3.5 space-y-1 text-[11px]">
-                            {row.currentHandle && (
+                            {row.currentVendor && row.currentVendor !== '—' && (
                               <div>
-                                <span className="text-slate-400 font-mono">handle: </span>
-                                <span className="font-mono text-slate-700">{row.currentHandle}</span>
+                                <span className="text-slate-400">marca: </span>
+                                <span className="text-slate-700">{row.currentVendor || '(Vacía)'}</span>
                               </div>
                             )}
-                            {row.currentSeoTitle && (
+                            {row.currentMinPrice !== null && (
                               <div>
-                                <span className="text-slate-400">title: </span>
-                                <span className="text-slate-700">{row.currentSeoTitle}</span>
+                                <span className="text-slate-400">precio: </span>
+                                <span className="text-slate-700">
+                                  {row.currentMinPrice === row.currentMaxPrice
+                                    ? formatMoney(row.currentMinPrice)
+                                    : `${formatMoney(row.currentMinPrice)} – ${formatMoney(row.currentMaxPrice)}`}
+                                </span>
                               </div>
                             )}
-                            {row.currentSeoDescription && (
+                            {row.currentDescription && row.currentDescription !== '—' && (
                               <div className="line-clamp-2 text-slate-500">
                                 <span className="text-slate-400">desc: </span>
-                                {row.currentSeoDescription}
+                                {row.currentDescription || '(Sin descripción)'}
                               </div>
                             )}
                           </td>
 
-                          {/* Nuevo valor */}
-                          <td className="py-3 px-3.5 text-[11px] min-w-[240px]">
-                            {isEditableMode ? (
-                              <div className="space-y-1.5">
-                                <div>
-                                  <label className="text-slate-400 font-mono block text-[10px]">handle</label>
-                                  <input
-                                    type="text"
-                                    value={editableValues[row.productId]?.handle ?? row.newHandle}
-                                    onChange={(e) =>
-                                      updateEditableField(
-                                        row.productId,
-                                        'handle',
-                                        e.target.value.toLowerCase().replace(/\s+/g, '-')
-                                      )
-                                    }
-                                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-[11px] font-mono focus:outline-none focus:ring-1 focus:ring-[#6012C3] focus:border-[#6012C3]"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-slate-400 block text-[10px]">SEO Title</label>
-                                  <input
-                                    type="text"
-                                    value={editableValues[row.productId]?.seoTitle ?? row.newSeoTitle}
-                                    onChange={(e) => updateEditableField(row.productId, 'seoTitle', e.target.value)}
-                                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-[11px] focus:outline-none focus:ring-1 focus:ring-[#6012C3] focus:border-[#6012C3]"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-slate-400 block text-[10px]">Meta Description</label>
-                                  <textarea
-                                    rows={2}
-                                    value={editableValues[row.productId]?.seoDescription ?? row.newSeoDescription}
-                                    onChange={(e) => updateEditableField(row.productId, 'seoDescription', e.target.value)}
-                                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-[11px] resize-y focus:outline-none focus:ring-1 focus:ring-[#6012C3] focus:border-[#6012C3]"
-                                  />
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="space-y-1">
-                                {row.newHandle && row.newHandle !== row.currentHandle && (
-                                  <div>
-                                    <span className="text-slate-400 font-mono">handle: </span>
-                                    <span className="font-mono text-[#6012C3] font-bold">{row.newHandle}</span>
-                                  </div>
-                                )}
-                                {row.newSeoTitle && row.newSeoTitle !== row.currentSeoTitle && (
-                                  <div>
-                                    <span className="text-slate-400">title: </span>
-                                    <span className="text-[#6012C3] font-semibold">{row.newSeoTitle}</span>
-                                  </div>
-                                )}
-                                {row.newSeoDescription && row.newSeoDescription !== row.currentSeoDescription && (
-                                  <div className="line-clamp-2 text-[#4b0d9c]">
-                                    <span className="text-slate-400">desc: </span>
-                                    {row.newSeoDescription}
-                                  </div>
-                                )}
-                                {row.fieldsToUpdate.length === 0 && (
-                                  <span className="text-slate-400 italic">Identico al actual</span>
-                                )}
+                          <td className="py-3 px-3.5 text-[11px] min-w-[220px] space-y-1">
+                            {row.fieldsToUpdate.includes('vendor') && (
+                              <div>
+                                <span className="text-slate-400">marca: </span>
+                                <span className="text-[#6012C3] font-bold">{row.newVendor}</span>
                               </div>
                             )}
+                            {row.fieldsToUpdate.includes('price') && (
+                              <div>
+                                <span className="text-slate-400">precio: </span>
+                                <span className="text-[#6012C3] font-bold">{formatMoney(row.newPrice)}</span>
+                              </div>
+                            )}
+                            {row.fieldsToUpdate.includes('description') && (
+                              <div className="line-clamp-2 text-[#4b0d9c]">
+                                <span className="text-slate-400">desc: </span>
+                                {row.newDescription}
+                              </div>
+                            )}
+                            {row.fieldsToUpdate.length === 0 && <span className="text-slate-400 italic">Idéntico al actual</span>}
                           </td>
                         </tr>
                       );
@@ -937,9 +725,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
           </div>
 
           <div className="space-y-1">
-            <h3 className="text-xl font-bold text-slate-900">
-              Procesando actualizaciones en Shopify...
-            </h3>
+            <h3 className="text-xl font-bold text-slate-900">Procesando actualizaciones en Shopify...</h3>
             <p className="text-xs text-slate-500">
               Controlando la tasa de concurrencia y límites de API de Shopify GraphQL de manera segura.
             </p>
@@ -951,20 +737,17 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             )}
           </div>
 
-          {/* Progress bar */}
           <div className="max-w-md mx-auto space-y-2">
             <div className="flex justify-between text-xs font-semibold text-slate-700">
-              <span>Procesando {progressCount} / {previewSummary?.toUpdate}</span>
               <span>
-                {Math.min(99, Math.round((progressCount / (previewSummary?.toUpdate || 1)) * 100))}%
+                Procesando {progressCount} / {previewSummary?.toUpdate}
               </span>
+              <span>{Math.min(99, Math.round((progressCount / (previewSummary?.toUpdate || 1)) * 100))}%</span>
             </div>
             <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
               <div
                 className="h-full bg-[#6012C3] transition-all duration-300 rounded-full"
-                style={{
-                  width: `${Math.min(100, Math.round((progressCount / (previewSummary?.toUpdate || 1)) * 100))}%`,
-                }}
+                style={{ width: `${Math.min(100, Math.round((progressCount / (previewSummary?.toUpdate || 1)) * 100))}%` }}
               />
             </div>
           </div>
@@ -981,9 +764,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                   <CheckCircle2 className="w-4 h-4" />
                   <span>Procesamiento Finalizado</span>
                 </div>
-                <h2 className="text-xl font-bold text-slate-900 mt-0.5">
-                  Resultados de la Actualización
-                </h2>
+                <h2 className="text-xl font-bold text-slate-900 mt-0.5">Resultados de la Actualización</h2>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -1000,15 +781,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
 
                 <button
                   type="button"
-                  onClick={() => downloadExecutionReport(executionResults)}
-                  className="px-4 py-2 bg-[#6012C3] hover:bg-[#4b0d9c] text-white font-semibold text-xs rounded-xl transition-all shadow-xs flex items-center space-x-1.5 cursor-pointer"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Descargar reporte CSV</span>
-                </button>
-
-                <button
-                  type="button"
                   onClick={handleReset}
                   className="px-3.5 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors flex items-center space-x-1 cursor-pointer"
                 >
@@ -1018,12 +790,12 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
               </div>
             </div>
 
-            {/* Status confirmation banner */}
             <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-900">
               <div className="flex items-center space-x-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
-                  <strong>Operación finalizada:</strong> Se actualizaron {executionSummary.success} producto(s) en Shopify. Los registros detallados se han guardado en la bitácora de sesión.
+                  <strong>Operación finalizada:</strong> Se actualizaron {executionSummary.success} producto(s) en
+                  Shopify. Los registros detallados se han guardado en la bitácora de sesión.
                 </span>
               </div>
               {onNavigate && (
@@ -1037,7 +809,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
               )}
             </div>
 
-            {/* Results statistics banner */}
             <div className="grid grid-cols-3 gap-4">
               <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center space-x-3">
                 <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
@@ -1065,7 +836,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             </div>
           </div>
 
-          {/* Results table */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
             <div className="overflow-x-auto max-h-[500px]">
               <table className="w-full text-left text-xs text-slate-600">
@@ -1105,26 +875,16 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                         </td>
                         <td className="py-3 px-3.5">
                           {r.updatedFields.length > 0 ? (
-                            <span className="font-medium text-[#6012C3]">
-                              {r.updatedFields
-                                .map((f) => (f === 'handle' ? 'Handle' : f === 'seoTitle' ? 'SEO Title' : 'Meta Description'))
-                                .join(', ')}
-                            </span>
+                            <span className="font-medium text-[#6012C3]">{r.updatedFields.map(fieldLabel).join(', ')}</span>
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="py-3 px-3.5 space-y-0.5">
+                        <td className="py-3 px-3.5">
                           {r.errorMessage ? (
                             <span className="block text-rose-600 font-medium text-[11px]">{r.errorMessage}</span>
-                          ) : !r.redirectCreated && !r.redirectWarning ? (
+                          ) : (
                             <span className="text-slate-400">—</span>
-                          ) : null}
-                          {r.redirectCreated && (
-                            <span className="block text-emerald-600 text-[11px]">✓ Redirect 301 creado</span>
-                          )}
-                          {r.redirectWarning && (
-                            <span className="block text-amber-600 text-[11px]">⚠ Redirect no creado: {r.redirectWarning}</span>
                           )}
                         </td>
                       </tr>
@@ -1137,7 +897,7 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
         </div>
       )}
 
-      {/* Confirmation Modal required by specifications */}
+      {/* Confirmation Modal */}
       {showConfirmModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 space-y-4 border border-slate-200">
@@ -1146,17 +906,20 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
             </div>
 
             <div className="space-y-1">
-              <h3 className="text-lg font-bold text-slate-900">
-                Confirmar actualización masiva
-              </h3>
+              <h3 className="text-lg font-bold text-slate-900">Confirmar actualización masiva de catálogo</h3>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Se actualizarán <strong>{previewSummary?.toUpdate}</strong> productos en Shopify. Esta acción modificará únicamente <strong>Handle, SEO Title y Meta Description</strong>.
+                Se actualizarán <strong>{previewSummary?.toUpdate}</strong> productos en Shopify. Esta acción puede
+                modificar <strong>Marca, Precio y/o Descripción</strong> según lo detectado en cada fila.
               </p>
             </div>
 
             <div className="p-3 bg-purple-50 rounded-xl border border-purple-200 text-xs text-purple-900 space-y-1">
-              <p>• Productos válidos: <strong>{previewSummary?.valid}</strong></p>
-              <p>• Con advertencias de longitud: <strong>{previewSummary?.warnings}</strong></p>
+              <p>
+                • Productos válidos: <strong>{previewSummary?.valid}</strong>
+              </p>
+              <p>
+                • Con advertencias: <strong>{previewSummary?.warnings}</strong>
+              </p>
               <p>• Los productos con errores o sin cambios serán omitidos de forma segura.</p>
             </div>
 
@@ -1169,7 +932,6 @@ export const BulkUploadView: React.FC<BulkUploadViewProps> = ({ shop, onExecutio
                 Cancelar
               </button>
               <button
-                id="btn-confirm-bulk-execution"
                 type="button"
                 onClick={handleExecute}
                 className="px-5 py-2 text-xs font-semibold text-white bg-[#6012C3] hover:bg-[#4b0d9c] rounded-xl transition-colors shadow-xs cursor-pointer"

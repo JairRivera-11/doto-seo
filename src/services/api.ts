@@ -8,6 +8,11 @@ import {
   SessionLog,
   SEOAuditRow,
   SEOAuditSummary,
+  CatalogAuditRow,
+  CatalogAuditSummary,
+  CatalogBulkPreviewRow,
+  CatalogBulkPreviewSummary,
+  CatalogBulkExecutionResult,
 } from '../types/seo';
 
 export async function getSessionStatus(): Promise<{
@@ -129,6 +134,53 @@ export async function scanSEOAudit(): Promise<{
     throw new Error(data.error || 'Error al auditar productos en Shopify.');
   }
   return { summary: data.summary, products: data.products };
+}
+
+export async function scanCatalogAudit(): Promise<{
+  summary: CatalogAuditSummary;
+  products: CatalogAuditRow[];
+}> {
+  const res = await fetch('/api/shopify/catalog-audit/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Error al auditar el catálogo en Shopify.');
+  }
+  return { summary: data.summary, products: data.products };
+}
+
+export async function previewCatalogAuditBulk(rows: any[]): Promise<{
+  summary: CatalogBulkPreviewSummary;
+  previewRows: CatalogBulkPreviewRow[];
+}> {
+  const res = await fetch('/api/shopify/catalog-audit/preview-bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Error al procesar la vista previa masiva de catálogo.');
+  }
+  return { summary: data.summary, previewRows: data.previewRows };
+}
+
+export async function executeCatalogAuditBulk(items: any[]): Promise<{
+  summary: { total: number; success: number; errors: number; skipped: number };
+  results: CatalogBulkExecutionResult[];
+}> {
+  const res = await fetch('/api/shopify/catalog-audit/execute-bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.success) {
+    throw new Error(data.error || 'Error al ejecutar las actualizaciones masivas de catálogo.');
+  }
+  return { summary: data.summary, results: data.results };
 }
 
 export async function getSessionLogs(): Promise<SessionLog[]> {
